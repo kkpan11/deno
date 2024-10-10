@@ -19,9 +19,10 @@ use super::refactor::EXTRACT_TYPE;
 use super::semantic_tokens;
 use super::semantic_tokens::SemanticTokensBuilder;
 use super::text::LineIndex;
+use super::urls::uri_to_url;
 use super::urls::url_to_uri;
-use super::urls::LspClientUrl;
 use super::urls::INVALID_SPECIFIER;
+use super::urls::INVALID_URI;
 
 use crate::args::jsr_url;
 use crate::args::FmtOptionsConfig;
@@ -38,7 +39,6 @@ use deno_core::convert::ToV8;
 use deno_core::error::StdAnyError;
 use deno_core::futures::stream::FuturesOrdered;
 use deno_core::futures::StreamExt;
-use deno_runtime::fs_util::specifier_to_file_path;
 
 use dashmap::DashMap;
 use deno_ast::MediaType;
@@ -62,6 +62,7 @@ use deno_core::ModuleSpecifier;
 use deno_core::OpState;
 use deno_core::PollEventLoopOptions;
 use deno_core::RuntimeOptions;
+use deno_path_util::url_to_file_path;
 use deno_runtime::inspector_server::InspectorServer;
 use deno_runtime::tokio_util::create_basic_runtime;
 use indexmap::IndexMap;
@@ -2047,7 +2048,7 @@ impl DocumentSpan {
     let file_referrer = target_asset_or_doc.file_referrer();
     let target_uri = language_server
       .url_map
-      .normalize_specifier(&target_specifier, file_referrer)
+      .specifier_to_uri(&target_specifier, file_referrer)
       .ok()?;
     let (target_range, target_selection_range) =
       if let Some(context_span) = &self.context_span {
@@ -2072,7 +2073,7 @@ impl DocumentSpan {
       };
     let link = lsp::LocationLink {
       origin_selection_range,
-      target_uri: target_uri.to_uri(),
+      target_uri,
       target_range,
       target_selection_range,
     };
@@ -2092,11 +2093,11 @@ impl DocumentSpan {
     let line_index = asset_or_doc.line_index();
     let range = self.text_span.to_range(line_index);
     let file_referrer = asset_or_doc.file_referrer();
-    let mut target = language_server
+    let target_uri = language_server
       .url_map
-      .normalize_specifier(&specifier, file_referrer)
-      .ok()?
-      .into_url();
+      .specifier_to_uri(&specifier, file_referrer)
+      .ok()?;
+    let mut target = uri_to_url(&target_uri);
     target.set_fragment(Some(&format!(
       "L{},{}",
       range.start.line + 1,
@@ -2155,13 +2156,10 @@ impl NavigateToItem {
     let file_referrer = asset_or_doc.file_referrer();
     let uri = language_server
       .url_map
-      .normalize_specifier(&specifier, file_referrer)
+      .specifier_to_uri(&specifier, file_referrer)
       .ok()?;
     let range = self.text_span.to_range(line_index);
-    let location = lsp::Location {
-      uri: uri.to_uri(),
-      range,
-    };
+    let location = lsp::Location { uri, range };
 
     let mut tags: Option<Vec<lsp::SymbolTag>> = None;
     let kind_modifiers = parse_kind_modifier(&self.kind_modifiers);
@@ -2414,12 +2412,10 @@ impl ImplementationLocation {
     let file_referrer = language_server.documents.get_file_referrer(&specifier);
     let uri = language_server
       .url_map
-      .normalize_specifier(&specifier, file_referrer.as_deref())
-      .unwrap_or_else(|_| {
-        LspClientUrl::new(ModuleSpecifier::parse("deno://invalid").unwrap())
-      });
+      .specifier_to_uri(&specifier, file_referrer.as_deref())
+      .unwrap_or_else(|_| INVALID_URI.clone());
     lsp::Location {
-      uri: uri.to_uri(),
+      uri,
       range: self.document_span.text_span.to_range(line_index),
     }
   }
@@ -2475,7 +2471,7 @@ impl RenameLocations {
         language_server.documents.get_file_referrer(&specifier);
       let uri = language_server
         .url_map
-        .normalize_specifier(&specifier, file_referrer.as_deref())?;
+        .specifier_to_uri(&specifier, file_referrer.as_deref())?;
       let asset_or_doc = language_server.get_asset_or_document(&specifier)?;
 
       // ensure TextDocumentEdit for `location.file_name`.
@@ -2484,7 +2480,7 @@ impl RenameLocations {
           uri.clone(),
           lsp::TextDocumentEdit {
             text_document: lsp::OptionalVersionedTextDocumentIdentifier {
-              uri: uri.to_uri(),
+              uri: uri.clone(),
               version: asset_or_doc.document_lsp_version(),
             },
             edits:
@@ -2686,7 +2682,7 @@ impl FileTextChanges {
       .collect();
     Ok(lsp::TextDocumentEdit {
       text_document: lsp::OptionalVersionedTextDocumentIdentifier {
-        uri: url_to_uri(&specifier),
+        uri: url_to_uri(&specifier)?,
         version: asset_or_doc.document_lsp_version(),
       },
       edits,
@@ -2713,7 +2709,7 @@ impl FileTextChanges {
     if self.is_new_file.unwrap_or(false) {
       ops.push(lsp::DocumentChangeOperation::Op(lsp::ResourceOp::Create(
         lsp::CreateFile {
-          uri: url_to_uri(&specifier),
+          uri: url_to_uri(&specifier)?,
           options: Some(lsp::CreateFileOptions {
             ignore_if_exists: Some(true),
             overwrite: None,
@@ -2730,7 +2726,7 @@ impl FileTextChanges {
       .collect();
     ops.push(lsp::DocumentChangeOperation::Edit(lsp::TextDocumentEdit {
       text_document: lsp::OptionalVersionedTextDocumentIdentifier {
-        uri: url_to_uri(&specifier),
+        uri: url_to_uri(&specifier)?,
         version: maybe_asset_or_document.and_then(|d| d.document_lsp_version()),
       },
       edits,
@@ -3128,10 +3124,10 @@ impl ReferenceEntry {
     let file_referrer = language_server.documents.get_file_referrer(&specifier);
     let uri = language_server
       .url_map
-      .normalize_specifier(&specifier, file_referrer.as_deref())
-      .unwrap_or_else(|_| LspClientUrl::new(INVALID_SPECIFIER.clone()));
+      .specifier_to_uri(&specifier, file_referrer.as_deref())
+      .unwrap_or_else(|_| INVALID_URI.clone());
     lsp::Location {
-      uri: uri.to_uri(),
+      uri,
       range: self.document_span.text_span.to_range(line_index),
     }
   }
@@ -3189,12 +3185,13 @@ impl CallHierarchyItem {
       .get_file_referrer(&target_specifier);
     let uri = language_server
       .url_map
-      .normalize_specifier(&target_specifier, file_referrer.as_deref())
-      .unwrap_or_else(|_| LspClientUrl::new(INVALID_SPECIFIER.clone()));
+      .specifier_to_uri(&target_specifier, file_referrer.as_deref())
+      .unwrap_or_else(|_| INVALID_URI.clone());
 
     let use_file_name = self.is_source_file_item();
-    let maybe_file_path = if uri.as_url().scheme() == "file" {
-      specifier_to_file_path(uri.as_url()).ok()
+    let maybe_file_path = if uri.scheme().is_some_and(|s| s.as_str() == "file")
+    {
+      url_to_file_path(&uri_to_url(&uri)).ok()
     } else {
       None
     };
@@ -3238,7 +3235,7 @@ impl CallHierarchyItem {
     lsp::CallHierarchyItem {
       name,
       tags,
-      uri: uri.to_uri(),
+      uri,
       detail: Some(detail),
       kind: self.kind.clone().into(),
       range: self.span.to_range(line_index.clone()),
@@ -5478,7 +5475,6 @@ mod tests {
     let (temp_dir, ts_server, snapshot, _) = setup(
       json!({
         "target": "esnext",
-        "module": "esnext",
         "noEmit": true,
         "lib": [],
       }),
@@ -5524,7 +5520,6 @@ mod tests {
     let (temp_dir, ts_server, snapshot, _) = setup(
       json!({
         "target": "esnext",
-        "module": "esnext",
         "jsx": "react",
         "lib": ["esnext", "dom", "deno.ns"],
         "noEmit": true,
@@ -5550,7 +5545,6 @@ mod tests {
     let (temp_dir, ts_server, snapshot, _) = setup(
       json!({
         "target": "esnext",
-        "module": "esnext",
         "lib": ["deno.ns", "deno.window"],
         "noEmit": true,
       }),
@@ -5581,7 +5575,6 @@ mod tests {
     let (temp_dir, ts_server, snapshot, _) = setup(
       json!({
         "target": "esnext",
-        "module": "esnext",
         "lib": ["deno.ns", "deno.window"],
         "noEmit": true,
       }),
@@ -5627,7 +5620,6 @@ mod tests {
     let (temp_dir, ts_server, snapshot, _) = setup(
       json!({
         "target": "esnext",
-        "module": "esnext",
         "lib": ["deno.ns", "deno.window"],
         "noEmit": true,
       }),
@@ -5658,7 +5650,6 @@ mod tests {
     let (temp_dir, ts_server, snapshot, _) = setup(
       json!({
         "target": "esnext",
-        "module": "esnext",
         "lib": ["deno.ns", "deno.window"],
         "noEmit": true,
       }),
@@ -5725,7 +5716,6 @@ mod tests {
     let (temp_dir, ts_server, snapshot, _) = setup(
       json!({
         "target": "esnext",
-        "module": "esnext",
         "lib": ["deno.ns", "deno.window"],
         "noEmit": true,
       }),
@@ -5803,7 +5793,6 @@ mod tests {
     let (temp_dir, ts_server, snapshot, cache) = setup(
       json!({
         "target": "esnext",
-        "module": "esnext",
         "lib": ["deno.ns", "deno.window"],
         "noEmit": true,
       }),
@@ -5945,7 +5934,6 @@ mod tests {
     let (temp_dir, ts_server, snapshot, _) = setup(
       json!({
         "target": "esnext",
-        "module": "esnext",
         "lib": ["deno.ns", "deno.window"],
         "noEmit": true,
       }),
@@ -6096,7 +6084,6 @@ mod tests {
     let (temp_dir, ts_server, snapshot, _) = setup(
       json!({
         "target": "esnext",
-        "module": "esnext",
         "lib": ["deno.ns", "deno.window"],
         "noEmit": true,
       }),
@@ -6167,7 +6154,7 @@ mod tests {
     let change = changes.text_changes.first().unwrap();
     assert_eq!(
       change.new_text,
-      "import { someLongVariable } from './b.ts'\n"
+      "import type { someLongVariable } from './b.ts'\n"
     );
   }
 
@@ -6205,7 +6192,6 @@ mod tests {
     let (temp_dir, ts_server, snapshot, _) = setup(
       json!({
         "target": "esnext",
-        "module": "esnext",
         "lib": ["deno.ns", "deno.window"],
         "noEmit": true,
       }),
@@ -6276,7 +6262,6 @@ mod tests {
     let (temp_dir, _, snapshot, _) = setup(
       json!({
         "target": "esnext",
-        "module": "esnext",
         "lib": ["deno.ns", "deno.window"],
         "noEmit": true,
       }),
