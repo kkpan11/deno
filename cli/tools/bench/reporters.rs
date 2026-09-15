@@ -1,11 +1,10 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
+use deno_lib::version::DENO_VERSION_INFO;
 use serde::Serialize;
 
-use crate::tools::test::TestFailureFormatOptions;
-use crate::version;
-
 use super::*;
+use crate::tools::test::TestFailureFormatOptions;
 
 pub trait BenchReporter {
   fn report_group_summary(&mut self);
@@ -18,8 +17,11 @@ pub trait BenchReporter {
   fn report_uncaught_error(&mut self, origin: &str, error: Box<JsError>);
 }
 
+const JSON_SCHEMA_VERSION: u8 = 1;
+
 #[derive(Debug, Serialize)]
 struct JsonReporterOutput {
+  version: u8,
   runtime: String,
   cpu: String,
   benches: Vec<JsonReporterBench>,
@@ -28,11 +30,8 @@ struct JsonReporterOutput {
 impl Default for JsonReporterOutput {
   fn default() -> Self {
     Self {
-      runtime: format!(
-        "{} {}",
-        version::DENO_VERSION_INFO.user_agent,
-        env!("TARGET")
-      ),
+      version: JSON_SCHEMA_VERSION,
+      runtime: format!("{} {}", DENO_VERSION_INFO.user_agent, env!("TARGET")),
       cpu: mitata::cpu::name(),
       benches: vec![],
     }
@@ -57,7 +56,7 @@ impl JsonReporter {
   }
 }
 
-#[allow(clippy::print_stdout)]
+#[allow(clippy::print_stdout, reason = "reporter")]
 impl BenchReporter for JsonReporter {
   fn report_group_summary(&mut self) {}
   #[cold]
@@ -126,7 +125,7 @@ impl ConsoleReporter {
   }
 }
 
-#[allow(clippy::print_stdout)]
+#[allow(clippy::print_stdout, reason = "reporter")]
 impl BenchReporter for ConsoleReporter {
   #[cold]
   fn report_plan(&mut self, plan: &BenchPlan) {
@@ -152,12 +151,15 @@ impl BenchReporter for ConsoleReporter {
       .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
       .is_ok()
     {
-      println!("{}", colors::gray(format!("cpu: {}", mitata::cpu::name())));
+      println!(
+        "{}",
+        colors::gray(format!("    CPU | {}", mitata::cpu::name()))
+      );
       println!(
         "{}\n",
         colors::gray(format!(
-          "runtime: deno {} ({})",
-          crate::version::DENO_VERSION_INFO.deno,
+          "Runtime | Deno {} ({})",
+          DENO_VERSION_INFO.deno,
           env!("TARGET")
         ))
       );
@@ -166,7 +168,7 @@ impl BenchReporter for ConsoleReporter {
     }
 
     println!(
-      "{}\n{}\n{}",
+      "{}\n\n{}\n{}",
       colors::gray(&plan.origin),
       mitata::reporter::header(options),
       mitata::reporter::br(options)
@@ -231,7 +233,13 @@ impl BenchReporter for ConsoleReporter {
         );
 
         if !stats.high_precision && stats.used_explicit_timers {
-          println!("{}", colors::yellow(format!("Warning: start() and end() calls in \"{}\" are ignored because it averages less\nthan 10µs per iteration. Remove them for better results.", &desc.name)));
+          println!(
+            "{}",
+            colors::yellow(format!(
+              "Warning: start() and end() calls in \"{}\" are ignored because it averages less\nthan 10µs per iteration. Remove them for better results.",
+              &desc.name
+            ))
+          );
         }
 
         self.group_measurements.push((desc, stats.clone()));
@@ -304,8 +312,12 @@ impl BenchReporter for ConsoleReporter {
       colors::red_bold("error"),
       format_test_error(&error, &TestFailureFormatOptions::default())
     );
-    println!("This error was not caught from a benchmark and caused the bench runner to fail on the referenced module.");
-    println!("It most likely originated from a dangling promise, event/timeout handler or top-level code.");
+    println!(
+      "This error was not caught from a benchmark and caused the bench runner to fail on the referenced module."
+    );
+    println!(
+      "It most likely originated from a dangling promise, event/timeout handler or top-level code."
+    );
     println!();
   }
 }

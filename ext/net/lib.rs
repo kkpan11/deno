@@ -1,75 +1,95 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
+pub mod happy_eyeballs;
 pub mod io;
 pub mod ops;
 pub mod ops_tls;
 #[cfg(unix)]
 pub mod ops_unix;
+mod quic;
 pub mod raw;
 pub mod resolve_addr;
-mod tcp;
+pub mod tcp;
+pub mod tunnel;
+#[cfg(windows)]
+pub mod win_pipe;
 
-use deno_core::error::AnyError;
-use deno_core::OpState;
-use deno_tls::rustls::RootCertStore;
-use deno_tls::RootCertStoreProvider;
-use std::path::Path;
-use std::path::PathBuf;
 use std::sync::Arc;
+
+use deno_core::OpState;
+use deno_features::FeatureChecker;
+use deno_tls::RootCertStoreProvider;
+use deno_tls::rustls::RootCertStore;
+pub use quic::QuicError;
 
 pub const UNSTABLE_FEATURE_NAME: &str = "net";
 
-pub trait NetPermissions {
-  fn check_net<T: AsRef<str>>(
-    &mut self,
-    _host: &(T, Option<u16>),
-    _api_name: &str,
-  ) -> Result<(), AnyError>;
-  fn check_read(&mut self, _p: &Path, _api_name: &str) -> Result<(), AnyError>;
-  fn check_write(&mut self, _p: &Path, _api_name: &str)
-    -> Result<(), AnyError>;
+/// Permission check for opening a unix-domain socket path. Shared by the
+/// native unix-socket ops and the node-compat `PipeWrap` path in `ext/node`,
+/// which also backs Windows named pipes; unlike `ops_unix` this must compile
+/// on all platforms.
+///
+/// A unix socket is both a filesystem entry and an outbound network
+/// primitive, so this requires an `--allow-net=unix:<path>` rule in addition
+/// to filesystem access on the socket path. Without this, a script with only
+/// `--allow-read=/var/run/docker.sock` could connect to local IPC services
+/// (Docker, dbus, podman, etc.) with no `--allow-net` grant.
+///
+/// Abstract socket paths (Linux, leading NUL) have no filesystem entry, so
+/// they skip the filesystem check and rely on the network check alone.
+pub fn check_unix_socket_path<'a>(
+  permissions: &mut deno_permissions::PermissionsContainer,
+  path: std::borrow::Cow<'a, std::path::Path>,
+  access_kind: deno_permissions::OpenAccessKind,
+  api_name: Option<&str>,
+) -> Result<
+  deno_permissions::CheckedPath<'a>,
+  deno_permissions::PermissionCheckError,
+> {
+  let checked = if is_unix_socket_abstract_path(path.as_ref()) {
+    deno_permissions::CheckedPath::unsafe_new(path)
+  } else {
+    permissions.check_open(path, access_kind, api_name)?
+  };
+  permissions.check_net_unix_socket(&checked, api_name)?;
+  Ok(checked)
 }
 
-impl NetPermissions for deno_permissions::PermissionsContainer {
-  #[inline(always)]
-  fn check_net<T: AsRef<str>>(
-    &mut self,
-    host: &(T, Option<u16>),
-    api_name: &str,
-  ) -> Result<(), AnyError> {
-    deno_permissions::PermissionsContainer::check_net(self, host, api_name)
+/// Checks access to a multicast group using the UDP socket's bound port.
+///
+/// The group is already an IP address, but both checks are required: the
+/// first applies the requested host-and-port grant, while the second preserves
+/// IP deny rules that also apply after name resolution.
+pub fn check_multicast_membership_permission(
+  permissions: &mut deno_permissions::PermissionsContainer,
+  group: std::net::IpAddr,
+  port: u16,
+  api_name: &str,
+) -> Result<(), deno_permissions::PermissionCheckError> {
+  permissions.check_net(&(group.to_string(), Some(port)), api_name)?;
+  permissions.check_net_resolved(&group, port, api_name)?;
+  Ok(())
+}
+
+pub(crate) fn is_unix_socket_abstract_path(path: &std::path::Path) -> bool {
+  #[cfg(any(target_os = "android", target_os = "linux"))]
+  {
+    use std::os::unix::ffi::OsStrExt;
+    path.as_os_str().as_bytes().first() == Some(&0)
   }
 
-  #[inline(always)]
-  fn check_read(
-    &mut self,
-    path: &Path,
-    api_name: &str,
-  ) -> Result<(), AnyError> {
-    deno_permissions::PermissionsContainer::check_read(self, path, api_name)
-  }
-
-  #[inline(always)]
-  fn check_write(
-    &mut self,
-    path: &Path,
-    api_name: &str,
-  ) -> Result<(), AnyError> {
-    deno_permissions::PermissionsContainer::check_write(self, path, api_name)
+  #[cfg(not(any(target_os = "android", target_os = "linux")))]
+  {
+    let _ = path;
+    false
   }
 }
 
 /// Helper for checking unstable features. Used for sync ops.
 fn check_unstable(state: &OpState, api_name: &str) {
-  // TODO(bartlomieju): replace with `state.feature_checker.check_or_exit`
-  // once we phase out `check_or_exit_with_legacy_fallback`
   state
-    .feature_checker
-    .check_or_exit_with_legacy_fallback(UNSTABLE_FEATURE_NAME, api_name);
-}
-
-pub fn get_declaration() -> PathBuf {
-  PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lib.deno_net.d.ts")
+    .borrow::<Arc<FeatureChecker>>()
+    .check_or_exit(UNSTABLE_FEATURE_NAME, api_name);
 }
 
 #[derive(Clone)]
@@ -78,7 +98,9 @@ pub struct DefaultTlsOptions {
 }
 
 impl DefaultTlsOptions {
-  pub fn root_cert_store(&self) -> Result<Option<RootCertStore>, AnyError> {
+  pub fn root_cert_store(
+    &self,
+  ) -> Result<Option<RootCertStore>, deno_error::JsErrorBox> {
     Ok(match &self.root_cert_store_provider {
       Some(provider) => Some(provider.get_or_try_init()?.clone()),
       None => None,
@@ -94,47 +116,91 @@ pub struct UnsafelyIgnoreCertificateErrors(pub Option<Vec<String>>);
 
 deno_core::extension!(deno_net,
   deps = [ deno_web ],
-  parameters = [ P: NetPermissions ],
   ops = [
     ops::op_net_accept_tcp,
-    ops::op_net_connect_tcp<P>,
-    ops::op_net_listen_tcp<P>,
-    ops::op_net_listen_udp<P>,
-    ops::op_node_unstable_net_listen_udp<P>,
+    ops::op_net_get_ips_from_perm_token,
+    ops::op_net_connect_tcp,
+    ops::op_net_listen_tcp,
+    ops::op_net_listen_udp,
+    ops::op_node_unstable_net_listen_udp,
     ops::op_net_recv_udp,
-    ops::op_net_send_udp<P>,
+    ops::op_net_send_udp,
     ops::op_net_join_multi_v4_udp,
     ops::op_net_join_multi_v6_udp,
     ops::op_net_leave_multi_v4_udp,
     ops::op_net_leave_multi_v6_udp,
     ops::op_net_set_multi_loopback_udp,
     ops::op_net_set_multi_ttl_udp,
-    ops::op_dns_resolve<P>,
+    ops::op_net_set_broadcast_udp,
+    ops::op_net_validate_multicast,
+    ops::op_dns_resolve,
+    ops::op_net_get_system_dns_servers,
     ops::op_set_nodelay,
     ops::op_set_keepalive,
+    ops::op_net_listen_vsock,
+    ops::op_net_accept_vsock,
+    ops::op_net_connect_vsock,
+    ops::op_net_listen_tunnel,
+    ops::op_net_accept_tunnel,
 
     ops_tls::op_tls_key_null,
     ops_tls::op_tls_key_static,
-    ops_tls::op_tls_key_static_from_file<P>,
     ops_tls::op_tls_cert_resolver_create,
     ops_tls::op_tls_cert_resolver_poll,
     ops_tls::op_tls_cert_resolver_resolve,
     ops_tls::op_tls_cert_resolver_resolve_error,
-    ops_tls::op_tls_start<P>,
-    ops_tls::op_net_connect_tls<P>,
-    ops_tls::op_net_listen_tls<P>,
+    ops_tls::op_tls_start,
+    ops_tls::op_net_connect_tls,
+    ops_tls::op_net_listen_tls,
     ops_tls::op_net_accept_tls,
     ops_tls::op_tls_handshake,
 
     ops_unix::op_net_accept_unix,
-    ops_unix::op_net_connect_unix<P>,
-    ops_unix::op_net_listen_unix<P>,
-    ops_unix::op_net_listen_unixpacket<P>,
-    ops_unix::op_node_unstable_net_listen_unixpacket<P>,
+    ops_unix::op_net_connect_unix,
+    ops_unix::op_net_listen_unix,
+    ops_unix::op_net_listen_unixpacket,
+    ops_unix::op_node_unstable_net_listen_unixpacket,
     ops_unix::op_net_recv_unixpacket,
-    ops_unix::op_net_send_unixpacket<P>,
+    ops_unix::op_net_send_unixpacket,
+
+    quic::op_quic_connecting_0rtt,
+    quic::op_quic_connecting_1rtt,
+    quic::op_quic_connection_accept_bi,
+    quic::op_quic_connection_accept_uni,
+    quic::op_quic_connection_close,
+    quic::op_quic_connection_closed,
+    quic::op_quic_connection_get_protocol,
+    quic::op_quic_connection_get_remote_addr,
+    quic::op_quic_connection_get_server_name,
+    quic::op_quic_connection_handshake,
+    quic::op_quic_connection_open_bi,
+    quic::op_quic_connection_open_uni,
+    quic::op_quic_connection_get_max_datagram_size,
+    quic::op_quic_connection_read_datagram,
+    quic::op_quic_connection_send_datagram,
+    quic::op_quic_endpoint_close,
+    quic::op_quic_endpoint_connect,
+    quic::op_quic_endpoint_create,
+    quic::op_quic_endpoint_get_addr,
+    quic::op_quic_endpoint_listen,
+    quic::op_quic_incoming_accept,
+    quic::op_quic_incoming_accept_0rtt,
+    quic::op_quic_incoming_ignore,
+    quic::op_quic_incoming_local_ip,
+    quic::op_quic_incoming_refuse,
+    quic::op_quic_incoming_remote_addr,
+    quic::op_quic_incoming_remote_addr_validated,
+    quic::op_quic_listener_accept,
+    quic::op_quic_listener_stop,
+    quic::op_quic_recv_stream_get_id,
+    quic::op_quic_send_stream_get_id,
+    quic::op_quic_send_stream_get_priority,
+    quic::op_quic_send_stream_set_priority,
+    quic::webtransport::op_webtransport_accept,
+    quic::webtransport::op_webtransport_connect,
   ],
-  esm = [ "01_net.js", "02_tls.js" ],
+  lazy_loaded_esm = [ "03_quic.js" ],
+  lazy_loaded_js = [ "01_net.js", "02_tls.js" ],
   options = {
     root_cert_store_provider: Option<Arc<dyn RootCertStoreProvider>>,
     unsafely_ignore_certificate_errors: Option<Vec<String>>,
@@ -152,7 +218,6 @@ deno_core::extension!(deno_net,
 /// Stub ops for non-unix platforms.
 #[cfg(not(unix))]
 mod ops_unix {
-  use crate::NetPermissions;
   use deno_core::op2;
 
   macro_rules! stub_op {
@@ -169,26 +234,13 @@ mod ops_unix {
         ))
       }
     };
-    ($name:ident<P>) => {
-      #[op2(fast)]
-      pub fn $name<P: NetPermissions>() -> Result<(), std::io::Error> {
-        let error_msg = format!(
-          "Operation `{:?}` not supported on non-unix platforms.",
-          stringify!($name)
-        );
-        Err(std::io::Error::new(
-          std::io::ErrorKind::Unsupported,
-          error_msg,
-        ))
-      }
-    };
   }
 
   stub_op!(op_net_accept_unix);
-  stub_op!(op_net_connect_unix<P>);
-  stub_op!(op_net_listen_unix<P>);
-  stub_op!(op_net_listen_unixpacket<P>);
-  stub_op!(op_node_unstable_net_listen_unixpacket<P>);
+  stub_op!(op_net_connect_unix);
+  stub_op!(op_net_listen_unix);
+  stub_op!(op_net_listen_unixpacket);
+  stub_op!(op_node_unstable_net_listen_unixpacket);
   stub_op!(op_net_recv_unixpacket);
-  stub_op!(op_net_send_unixpacket<P>);
+  stub_op!(op_net_send_unixpacket);
 }

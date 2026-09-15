@@ -1,4 +1,7 @@
 {
-  "args": "check --all main.tsx",
+  // ignored: tsc doesn't resolve the jsxImportSource jsx-runtime types.
+  // https://github.com/denoland/deno/issues/36085
+  "ignore": true,
+  "args": "check --allow-import --all main.tsx",
   "output": "main.out"
 }

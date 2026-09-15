@@ -1,4 +1,5 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// deno-lint-ignore-file no-deprecated-deno-api
+// Copyright 2018-2026 the Deno authors. MIT license.
 import {
   assert,
   assertEquals,
@@ -11,18 +12,18 @@ Deno.test(
   { permissions: { read: true, run: false } },
   function runPermissions() {
     assertThrows(() => {
-      // deno-lint-ignore no-deprecated-deno-api
+      // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
       Deno.run({
         cmd: [Deno.execPath(), "eval", "console.log('hello world')"],
       });
-    }, Deno.errors.PermissionDenied);
+    }, Deno.errors.NotCapable);
   },
 );
 
 Deno.test(
   { permissions: { run: true, read: true } },
   async function runSuccess() {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       // freeze the array to ensure it's not modified
       cmd: Object.freeze([
@@ -45,7 +46,7 @@ Deno.test(
 Deno.test(
   { permissions: { run: true, read: true } },
   async function runUrl() {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [
         new URL(`file:///${Deno.execPath()}`),
@@ -69,7 +70,7 @@ Deno.test(
   async function runStdinRid0(): Promise<
     void
   > {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [Deno.execPath(), "eval", "console.log('hello world')"],
       stdin: 0,
@@ -89,26 +90,23 @@ Deno.test(
   { permissions: { run: true, read: true } },
   function runInvalidStdio() {
     assertThrows(() =>
-      // deno-lint-ignore no-deprecated-deno-api
+      // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
       Deno.run({
         cmd: [Deno.execPath(), "eval", "console.log('hello world')"],
-        // @ts-expect-error because Deno.run should throw on invalid stdin.
         stdin: "a",
       })
     );
     assertThrows(() =>
-      // deno-lint-ignore no-deprecated-deno-api
+      // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
       Deno.run({
         cmd: [Deno.execPath(), "eval", "console.log('hello world')"],
-        // @ts-expect-error because Deno.run should throw on invalid stdout.
         stdout: "b",
       })
     );
     assertThrows(() =>
-      // deno-lint-ignore no-deprecated-deno-api
+      // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
       Deno.run({
         cmd: [Deno.execPath(), "eval", "console.log('hello world')"],
-        // @ts-expect-error because Deno.run should throw on invalid stderr.
         stderr: "c",
       })
     );
@@ -118,7 +116,7 @@ Deno.test(
 Deno.test(
   { permissions: { run: true, read: true } },
   async function runCommandFailedWithCode() {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [Deno.execPath(), "eval", "Deno.exit(41 + 1)"],
     });
@@ -135,7 +133,7 @@ Deno.test(
     permissions: { run: true, read: true },
   },
   async function runCommandFailedWithSignal() {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [
         Deno.execPath(),
@@ -159,7 +157,7 @@ Deno.test(
 Deno.test({ permissions: { run: true } }, function runNotFound() {
   let error;
   try {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     Deno.run({ cmd: ["this file hopefully doesn't exist"] });
   } catch (e) {
     error = e;
@@ -191,7 +189,7 @@ tryExit();
 `;
 
     Deno.writeFileSync(`${cwd}/${programFile}`, enc.encode(program));
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cwd,
       cmd: [Deno.execPath(), "run", "--allow-read", programFile],
@@ -215,7 +213,7 @@ Deno.test(
   async function runStdinPiped(): Promise<
     void
   > {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [
         Deno.execPath(),
@@ -253,7 +251,7 @@ Deno.test(
   async function runStdoutPiped(): Promise<
     void
   > {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [
         Deno.execPath(),
@@ -290,7 +288,7 @@ Deno.test(
   async function runStderrPiped(): Promise<
     void
   > {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [
         Deno.execPath(),
@@ -325,7 +323,7 @@ Deno.test(
 Deno.test(
   { permissions: { run: true, read: true } },
   async function runOutput() {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [
         Deno.execPath(),
@@ -346,7 +344,7 @@ Deno.test(
   async function runStderrOutput(): Promise<
     void
   > {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [
         Deno.execPath(),
@@ -363,7 +361,9 @@ Deno.test(
 );
 
 Deno.test(
-  { permissions: { run: true, write: true, read: true } },
+  {
+    permissions: { run: true, write: true, read: true },
+  },
   async function runRedirectStdoutStderr() {
     const tempDir = await Deno.makeTempDir();
     const fileName = tempDir + "/redirected_stdio.txt";
@@ -372,17 +372,19 @@ Deno.test(
       write: true,
     });
 
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [
         Deno.execPath(),
         "eval",
         "Deno.stderr.write(new TextEncoder().encode('error\\n')); Deno.stdout.write(new TextEncoder().encode('output\\n'));",
       ],
-      stdout: file.rid,
-      stderr: file.rid,
+      stdout: "piped",
+      stderr: "piped",
     });
 
+    await p.stdout.readable.pipeTo(file.writable, { preventClose: true });
+    await p.stderr.readable.pipeTo(file.writable);
     await p.status();
     p.close();
 
@@ -392,18 +394,22 @@ Deno.test(
 
     assertStringIncludes(text, "error");
     assertStringIncludes(text, "output");
+    // deno-lint-ignore no-console
+    console.log("finished tgis test");
   },
 );
 
 Deno.test(
-  { permissions: { run: true, write: true, read: true } },
+  {
+    permissions: { run: true, write: true, read: true },
+  },
   async function runRedirectStdin() {
     const tempDir = await Deno.makeTempDir();
     const fileName = tempDir + "/redirected_stdio.txt";
     await Deno.writeTextFile(fileName, "hello");
     using file = await Deno.open(fileName);
 
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [
         Deno.execPath(),
@@ -416,9 +422,10 @@ Deno.test(
         }
         `,
       ],
-      stdin: file.rid,
+      stdin: "piped",
     });
 
+    await file.readable.pipeTo(p.stdin.writable);
     const status = await p.status();
     assertEquals(status.code, 0);
     p.close();
@@ -428,7 +435,7 @@ Deno.test(
 Deno.test(
   { permissions: { run: true, read: true } },
   async function runEnv() {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [
         Deno.execPath(),
@@ -451,7 +458,7 @@ Deno.test(
 Deno.test(
   { permissions: { run: true, read: true } },
   async function runClose() {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [
         Deno.execPath(),
@@ -475,7 +482,7 @@ Deno.test(
 Deno.test(
   { permissions: { run: true, read: true } },
   async function runKillAfterStatus() {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [Deno.execPath(), "eval", 'console.log("hello")'],
     });
@@ -503,12 +510,20 @@ Deno.test(
 
 Deno.test({ permissions: { run: false } }, function killPermissions() {
   assertThrows(() => {
-    // Unlike the other test cases, we don't have permission to spawn a
-    // subprocess we can safely kill. Instead we send SIGCONT to the current
-    // process - assuming that Deno does not have a special handler set for it
-    // and will just continue even if a signal is erroneously sent.
-    Deno.kill(Deno.pid, "SIGCONT");
-  }, Deno.errors.PermissionDenied);
+    // Signalling a process other than the current one still requires
+    // --allow-run. We use a pid that is not our own; the permission check
+    // happens before the signal is delivered, so it does not matter whether
+    // the pid refers to a live process.
+    Deno.kill(Deno.pid + 1, "SIGCONT");
+  }, Deno.errors.NotCapable);
+});
+
+Deno.test({ permissions: { run: false } }, function killSelfNoPermissions() {
+  // Sending a signal to the current process is functionally equivalent to
+  // terminating yourself, which never required permissions. Signal 0 is a
+  // liveness check that does not deliver a signal, so it works cross-platform
+  // without requiring --allow-run.
+  Deno.kill(Deno.pid, 0);
 });
 
 Deno.test(
@@ -532,7 +547,7 @@ Deno.test(
 Deno.test(
   { permissions: { run: true, read: true } },
   async function killSuccess() {
-    // deno-lint-ignore no-deprecated-deno-api
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [Deno.execPath(), "eval", "setTimeout(() => {}, 10000)"],
     });
@@ -556,7 +571,7 @@ Deno.test(
 );
 
 Deno.test({ permissions: { run: true, read: true } }, function killFailed() {
-  // deno-lint-ignore no-deprecated-deno-api
+  // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
   const p = Deno.run({
     cmd: [Deno.execPath(), "eval", "setTimeout(() => {}, 10000)"],
   });
@@ -572,108 +587,12 @@ Deno.test({ permissions: { run: true, read: true } }, function killFailed() {
 });
 
 Deno.test(
-  { permissions: { run: true, read: true, env: true } },
-  async function clearEnv(): Promise<void> {
-    // deno-lint-ignore no-deprecated-deno-api
-    const p = Deno.run({
-      cmd: [
-        Deno.execPath(),
-        "eval",
-        "-p",
-        "JSON.stringify(Deno.env.toObject())",
-      ],
-      stdout: "piped",
-      clearEnv: true,
-      env: {
-        FOO: "23147",
-      },
-    });
-
-    const obj = JSON.parse(new TextDecoder().decode(await p.output()));
-
-    // can't check for object equality because the OS may set additional env
-    // vars for processes, so we check if PATH isn't present as that is a common
-    // env var across OS's and isn't set for processes.
-    assertEquals(obj.FOO, "23147");
-    assert(!("PATH" in obj));
-
-    p.close();
-  },
-);
-
-Deno.test(
-  {
-    permissions: { run: true, read: true },
-    ignore: Deno.build.os === "windows",
-  },
-  async function uid(): Promise<void> {
-    // deno-lint-ignore no-deprecated-deno-api
-    const p = Deno.run({
-      cmd: [
-        "id",
-        "-u",
-      ],
-      stdout: "piped",
-    });
-
-    const currentUid = new TextDecoder().decode(await p.output());
-    p.close();
-
-    if (currentUid !== "0") {
-      assertThrows(() => {
-        // deno-lint-ignore no-deprecated-deno-api
-        Deno.run({
-          cmd: [
-            "echo",
-            "fhqwhgads",
-          ],
-          uid: 0,
-        });
-      }, Deno.errors.PermissionDenied);
-    }
-  },
-);
-
-Deno.test(
-  {
-    permissions: { run: true, read: true },
-    ignore: Deno.build.os === "windows",
-  },
-  async function gid(): Promise<void> {
-    // deno-lint-ignore no-deprecated-deno-api
-    const p = Deno.run({
-      cmd: [
-        "id",
-        "-g",
-      ],
-      stdout: "piped",
-    });
-
-    const currentGid = new TextDecoder().decode(await p.output());
-    p.close();
-
-    if (currentGid !== "0") {
-      assertThrows(() => {
-        // deno-lint-ignore no-deprecated-deno-api
-        Deno.run({
-          cmd: [
-            "echo",
-            "fhqwhgads",
-          ],
-          gid: 0,
-        });
-      }, Deno.errors.PermissionDenied);
-    }
-  },
-);
-
-Deno.test(
   {
     permissions: { run: true, read: true, write: true },
     ignore: Deno.build.os === "windows",
   },
-  async function non_existent_cwd(): Promise<void> {
-    // deno-lint-ignore no-deprecated-deno-api
+  async function nonExistentCwd(): Promise<void> {
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
     const p = Deno.run({
       cmd: [
         Deno.execPath(),
@@ -696,6 +615,95 @@ Deno.test(
     p.close();
     p.stdout.close();
     assertStrictEquals(code, 1);
-    assertStringIncludes(stderr, "Failed getting cwd.");
+    assertStringIncludes(stderr, "failed resolving cwd:");
   },
 );
+
+Deno.test(
+  {
+    permissions: { run: true, read: true, write: true },
+    ignore: Deno.build.os === "windows",
+  },
+  async function runWatchAndSigint(): Promise<void> {
+    const tempDir = await Deno.makeTempDir();
+    const tempFile = `${tempDir}/temp_watch_file.ts`;
+    await Deno.writeTextFile(tempFile, "console.log('watch test');");
+
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
+    const p = Deno.run({
+      cmd: [Deno.execPath(), "run", "--watch", tempFile],
+      stdout: "piped",
+      stderr: "null",
+    });
+
+    Deno.kill(p.pid, "SIGINT");
+    const data = new Uint8Array(10);
+    const out = await p.stdout.read(data);
+    assertEquals(out, null);
+    p.stdout.close();
+    p.close();
+
+    await Deno.remove(tempFile);
+    await Deno.remove(tempDir);
+  },
+);
+
+Deno.test(
+  {
+    permissions: { run: true, read: true, write: true },
+    ignore: Deno.build.os === "windows",
+  },
+  async function runWatchWaitForSigint(): Promise<void> {
+    const tempDir = await Deno.makeTempDir();
+    const tempFile = `${tempDir}/temp_watch_file.ts`;
+    await Deno.writeTextFile(
+      tempFile,
+      `Deno.addSignalListener("SIGINT", () => {
+  console.log("SIGINT");
+  ac.abort();
+});
+
+Deno.serve({ signal: ac.signal }, () => new Response("Hello World"));
+`,
+    );
+
+    // @ts-ignore `Deno.run()` was soft-removed in Deno 2.
+    const p = Deno.run({
+      cmd: [Deno.execPath(), "run", "--watch", tempFile],
+      stdout: "piped",
+      stderr: "null",
+    });
+
+    Deno.kill(p.pid, "SIGINT");
+    const data = new Uint8Array(10);
+    const out = await p.stdout.read(data);
+    assertEquals(out, null);
+    p.stdout.close();
+    p.close();
+
+    await Deno.remove(tempFile);
+    await Deno.remove(tempDir);
+  },
+);
+
+Deno.test({
+  name: "process.ppid matches parent process",
+  permissions: { run: true, read: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const command = new Deno.Command(Deno.execPath(), {
+      args: [
+        "eval",
+        "import { ppid } from 'node:process'; console.log(ppid);",
+      ],
+      stdout: "piped",
+    });
+
+    const { stdout } = await command.output();
+    const stdoutPpid = parseInt(
+      new TextDecoder().decode(stdout).trim(),
+    );
+
+    assertEquals(stdoutPpid, Deno.pid);
+  },
+});

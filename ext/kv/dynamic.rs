@@ -1,24 +1,22 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::remote::RemoteDbHandlerPermissions;
-use crate::sqlite::SqliteDbHandler;
-use crate::sqlite::SqliteDbHandlerPermissions;
+use async_trait::async_trait;
+use deno_core::OpState;
+use deno_error::JsErrorBox;
+use denokv_proto::CommitResult;
+use denokv_proto::ReadRangeOutput;
+use denokv_proto::WatchStream;
+
 use crate::AtomicWrite;
 use crate::Database;
 use crate::DatabaseHandler;
 use crate::QueueMessageHandle;
 use crate::ReadRange;
 use crate::SnapshotReadOptions;
-use async_trait::async_trait;
-use deno_core::error::type_error;
-use deno_core::error::AnyError;
-use deno_core::OpState;
-use denokv_proto::CommitResult;
-use denokv_proto::ReadRangeOutput;
-use denokv_proto::WatchStream;
+use crate::sqlite::SqliteDbHandler;
 
 pub struct MultiBackendDbHandler {
   backends: Vec<(&'static [&'static str], Box<dyn DynamicDbHandler>)>,
@@ -31,9 +29,7 @@ impl MultiBackendDbHandler {
     Self { backends }
   }
 
-  pub fn remote_or_sqlite<
-    P: SqliteDbHandlerPermissions + RemoteDbHandlerPermissions + 'static,
-  >(
+  pub fn remote_or_sqlite(
     default_storage_dir: Option<std::path::PathBuf>,
     versionstamp_rng_seed: Option<u64>,
     http_options: crate::remote::HttpOptions,
@@ -41,11 +37,11 @@ impl MultiBackendDbHandler {
     Self::new(vec![
       (
         &["https://", "http://"],
-        Box::new(crate::remote::RemoteDbHandler::<P>::new(http_options)),
+        Box::new(crate::remote::RemoteDbHandler::new(http_options)),
       ),
       (
         &[""],
-        Box::new(SqliteDbHandler::<P>::new(
+        Box::new(SqliteDbHandler::new(
           default_storage_dir,
           versionstamp_rng_seed,
         )),
@@ -61,8 +57,54 @@ impl DatabaseHandler for MultiBackendDbHandler {
   async fn open(
     &self,
     state: Rc<RefCell<OpState>>,
-    path: Option<String>,
-  ) -> Result<Self::DB, AnyError> {
+    mut path: Option<String>,
+  ) -> Result<Self::DB, JsErrorBox> {
+    if path.is_none()
+      && let Ok(x) = std::env::var("DENO_KV_DEFAULT_PATH")
+      && !x.is_empty()
+    {
+      path = Some(x);
+    }
+
+    if let Some(path) = &mut path
+      && let Ok(prefix) = std::env::var("DENO_KV_PATH_PREFIX")
+    {
+      *path = format!("{}{}", prefix, path);
+    }
+
+    // Deno Deploy: when an attached (distributed) KV database is required,
+    // do not silently fall back to a local/in-memory store. `error` rejects
+    // the open with a clear message; `warn` logs once and allows the fallback.
+    // A distributed database is one served over http(s) (see `remote_or_sqlite`).
+    if let Ok(mode) = std::env::var("DENO_KV_REQUIRES_DISTRIBUTED_DATABASE") {
+      let is_distributed = path
+        .as_deref()
+        .is_some_and(|p| p.starts_with("https://") || p.starts_with("http://"));
+      if !is_distributed {
+        match mode.as_str() {
+          "error" => {
+            return Err(JsErrorBox::type_error(
+              "Deno.openKv() failed: no KV database is attached to this app. \
+               Attach a KV database to your app in the Deno Deploy dashboard, \
+               then redeploy.",
+            ));
+          }
+          "warn" => {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+              log::warn!(
+                "Deno.openKv(): no KV database is attached to this app; using \
+                 a temporary in-memory store. Data will not persist and is not \
+                 shared between instances. Attach a KV database in the Deno \
+                 Deploy dashboard."
+              );
+            });
+          }
+          _ => {}
+        }
+      }
+    }
+
     for (prefixes, handler) in &self.backends {
       for &prefix in *prefixes {
         if prefix.is_empty() {
@@ -76,7 +118,7 @@ impl DatabaseHandler for MultiBackendDbHandler {
         }
       }
     }
-    Err(type_error(format!(
+    Err(JsErrorBox::type_error(format!(
       "No backend supports the given path: {:?}",
       path
     )))
@@ -89,7 +131,7 @@ pub trait DynamicDbHandler {
     &self,
     state: Rc<RefCell<OpState>>,
     path: Option<String>,
-  ) -> Result<RcDynamicDb, AnyError>;
+  ) -> Result<RcDynamicDb, JsErrorBox>;
 }
 
 #[async_trait(?Send)]
@@ -100,7 +142,7 @@ impl DatabaseHandler for Box<dyn DynamicDbHandler> {
     &self,
     state: Rc<RefCell<OpState>>,
     path: Option<String>,
-  ) -> Result<Self::DB, AnyError> {
+  ) -> Result<Self::DB, JsErrorBox> {
     (**self).dyn_open(state, path).await
   }
 }
@@ -115,7 +157,7 @@ where
     &self,
     state: Rc<RefCell<OpState>>,
     path: Option<String>,
-  ) -> Result<RcDynamicDb, AnyError> {
+  ) -> Result<RcDynamicDb, JsErrorBox> {
     Ok(RcDynamicDb(Rc::new(self.open(state, path).await?)))
   }
 }
@@ -126,16 +168,16 @@ pub trait DynamicDb {
     &self,
     requests: Vec<ReadRange>,
     options: SnapshotReadOptions,
-  ) -> Result<Vec<ReadRangeOutput>, AnyError>;
+  ) -> Result<Vec<ReadRangeOutput>, JsErrorBox>;
 
   async fn dyn_atomic_write(
     &self,
     write: AtomicWrite,
-  ) -> Result<Option<CommitResult>, AnyError>;
+  ) -> Result<Option<CommitResult>, JsErrorBox>;
 
   async fn dyn_dequeue_next_message(
     &self,
-  ) -> Result<Option<Box<dyn QueueMessageHandle>>, AnyError>;
+  ) -> Result<Option<Box<dyn QueueMessageHandle>>, JsErrorBox>;
 
   fn dyn_watch(&self, keys: Vec<Vec<u8>>) -> WatchStream;
 
@@ -153,20 +195,20 @@ impl Database for RcDynamicDb {
     &self,
     requests: Vec<ReadRange>,
     options: SnapshotReadOptions,
-  ) -> Result<Vec<ReadRangeOutput>, AnyError> {
+  ) -> Result<Vec<ReadRangeOutput>, JsErrorBox> {
     (*self.0).dyn_snapshot_read(requests, options).await
   }
 
   async fn atomic_write(
     &self,
     write: AtomicWrite,
-  ) -> Result<Option<CommitResult>, AnyError> {
+  ) -> Result<Option<CommitResult>, JsErrorBox> {
     (*self.0).dyn_atomic_write(write).await
   }
 
   async fn dequeue_next_message(
     &self,
-  ) -> Result<Option<Box<dyn QueueMessageHandle>>, AnyError> {
+  ) -> Result<Option<Box<dyn QueueMessageHandle>>, JsErrorBox> {
     (*self.0).dyn_dequeue_next_message().await
   }
 
@@ -189,20 +231,20 @@ where
     &self,
     requests: Vec<ReadRange>,
     options: SnapshotReadOptions,
-  ) -> Result<Vec<ReadRangeOutput>, AnyError> {
+  ) -> Result<Vec<ReadRangeOutput>, JsErrorBox> {
     Ok(self.snapshot_read(requests, options).await?)
   }
 
   async fn dyn_atomic_write(
     &self,
     write: AtomicWrite,
-  ) -> Result<Option<CommitResult>, AnyError> {
+  ) -> Result<Option<CommitResult>, JsErrorBox> {
     Ok(self.atomic_write(write).await?)
   }
 
   async fn dyn_dequeue_next_message(
     &self,
-  ) -> Result<Option<Box<dyn QueueMessageHandle>>, AnyError> {
+  ) -> Result<Option<Box<dyn QueueMessageHandle>>, JsErrorBox> {
     Ok(
       self
         .dequeue_next_message()

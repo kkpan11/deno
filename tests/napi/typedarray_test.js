@@ -1,5 +1,6 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
+import { Buffer } from "node:buffer";
 import { assert, assertEquals, loadTestLibrary } from "./common.js";
 
 const typedarray = loadTestLibrary();
@@ -26,6 +27,26 @@ Deno.test("napi typedarray float64", function () {
   assertEquals(doubleResult[0], -0);
   assertEquals(Math.round(10 * doubleResult[1]) / 10, -3.3);
   assertEquals(Math.round(10 * doubleResult[2]) / 10, -6.6);
+});
+
+Deno.test("napi_is_buffer", () => {
+  assert(!typedarray.test_is_buffer(5));
+  assert(!typedarray.test_is_buffer([]));
+  assert(typedarray.test_is_buffer(new Uint8Array()));
+  assert(typedarray.test_is_buffer(new Uint32Array()));
+  assert(typedarray.test_is_buffer(Buffer.from([])));
+});
+
+// Regression test for #36570: napi_get_typedarray_info must report
+// napi_float16_array (11) rather than aborting, and napi_create_typedarray
+// must accept napi_float16_array. napi_float32_array is 7.
+Deno.test("napi float16 typedarray", () => {
+  assertEquals(typedarray.test_typedarray_type(new Float32Array(4)), 7);
+  assertEquals(typedarray.test_typedarray_type(new Float16Array(4)), 11);
+
+  const arr = typedarray.test_create_float16();
+  assert(arr instanceof Float16Array);
+  assertEquals(arr.length, 4);
 });
 
 // TODO(bartlomieju): this test causes segfaults when used with jemalloc.

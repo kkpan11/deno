@@ -1,11 +1,12 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
-import { primordials } from "ext:core/mod.js";
-import {
+(function () {
+const { core, primordials } = __bootstrap;
+const {
   op_query_permission,
   op_request_permission,
   op_revoke_permission,
-} from "ext:core/ops";
+} = core.ops;
 const {
   ArrayIsArray,
   ArrayPrototypeIncludes,
@@ -25,8 +26,8 @@ const {
   TypeError,
 } = primordials;
 
-import { pathFromURL } from "ext:deno_web/00_infra.js";
-import { Event, EventTarget } from "ext:deno_web/02_event.js";
+const { pathFromURL } = core.loadExtScript("ext:deno_web/00_infra.js");
+const { Event, EventTarget } = core.loadExtScript("ext:deno_web/02_event.js");
 
 const illegalConstructorKey = Symbol("illegalConstructorKey");
 
@@ -37,7 +38,7 @@ const illegalConstructorKey = Symbol("illegalConstructorKey");
  * @property {boolean} partial
  */
 
-/** @type {ReadonlyArray<"read" | "write" | "net" | "env" | "sys" | "run" | "ffi" | "hrtime">} */
+/** @type {ReadonlyArray<"read" | "write" | "net" | "env" | "sys" | "run" | "ffi" | "import">} */
 const permissionNames = [
   "read",
   "write",
@@ -46,7 +47,7 @@ const permissionNames = [
   "sys",
   "run",
   "ffi",
-  "hrtime",
+  "import",
 ];
 
 /**
@@ -96,7 +97,7 @@ class PermissionStatus extends EventTarget {
    */
   constructor(status = null, key = null) {
     if (key != illegalConstructorKey) {
-      throw new TypeError("Illegal constructor.");
+      throw new TypeError("Illegal constructor");
     }
     super();
     this.#status = status;
@@ -137,7 +138,10 @@ function cache(desc, rawStatus) {
     ReflectHas(desc, "path")
   ) {
     key += `-${desc.path}&`;
-  } else if (desc.name === "net" && desc.host) {
+  } else if (
+    ((desc.name === "net") || desc.name === "import") &&
+    ReflectHas(desc, "host")
+  ) {
     key += `-${desc.host}&`;
   } else if (desc.name === "run" && desc.command) {
     key += `-${desc.command}&`;
@@ -195,7 +199,7 @@ function formDescriptor(desc) {
 class Permissions {
   constructor(key = null) {
     if (key != illegalConstructorKey) {
-      throw new TypeError("Illegal constructor.");
+      throw new TypeError("Illegal constructor");
     }
   }
 
@@ -210,7 +214,7 @@ class Permissions {
   querySync(desc) {
     if (!isValidDescriptor(desc)) {
       throw new TypeError(
-        `The provided value "${desc?.name}" is not a valid permission name.`,
+        `The provided value "${desc?.name}" is not a valid permission name`,
       );
     }
 
@@ -231,7 +235,7 @@ class Permissions {
   revokeSync(desc) {
     if (!isValidDescriptor(desc)) {
       throw new TypeError(
-        `The provided value "${desc?.name}" is not a valid permission name.`,
+        `The provided value "${desc?.name}" is not a valid permission name`,
       );
     }
 
@@ -270,7 +274,13 @@ function serializePermissions(permissions) {
   if (typeof permissions == "object" && permissions != null) {
     const serializedPermissions = { __proto__: null };
     for (
-      const key of new SafeArrayIterator(["read", "write", "run", "ffi"])
+      const key of new SafeArrayIterator([
+        "read",
+        "write",
+        "run",
+        "ffi",
+        "import",
+      ])
     ) {
       if (ArrayIsArray(permissions[key])) {
         serializedPermissions[key] = ArrayPrototypeMap(
@@ -282,7 +292,7 @@ function serializePermissions(permissions) {
       }
     }
     for (
-      const key of new SafeArrayIterator(["env", "hrtime", "net", "sys"])
+      const key of new SafeArrayIterator(["env", "net", "sys"])
     ) {
       if (ArrayIsArray(permissions[key])) {
         serializedPermissions[key] = ArrayPrototypeSlice(permissions[key]);
@@ -295,4 +305,5 @@ function serializePermissions(permissions) {
   return permissions;
 }
 
-export { Permissions, permissions, PermissionStatus, serializePermissions };
+return { Permissions, permissions, PermissionStatus, serializePermissions };
+})();

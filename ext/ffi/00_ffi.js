@@ -1,12 +1,13 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
-import { core, primordials } from "ext:core/mod.js";
+(function () {
+const { core, internals, primordials } = __bootstrap;
 const {
-  isArrayBuffer,
+  isAnyArrayBuffer,
   isDataView,
   isTypedArray,
 } = core;
-import {
+const {
   op_ffi_buf_copy_into,
   op_ffi_call_nonblocking,
   op_ffi_call_ptr,
@@ -14,6 +15,7 @@ import {
   op_ffi_cstr_read,
   op_ffi_get_buf,
   op_ffi_get_static,
+  op_ffi_get_turbocall_target,
   op_ffi_load,
   op_ffi_ptr_create,
   op_ffi_ptr_equals,
@@ -36,7 +38,7 @@ import {
   op_ffi_unsafe_callback_close,
   op_ffi_unsafe_callback_create,
   op_ffi_unsafe_callback_ref,
-} from "ext:core/ops";
+} = core.ops;
 const {
   ArrayBufferIsView,
   ArrayBufferPrototypeGetByteLength,
@@ -60,7 +62,7 @@ const {
   SafeWeakMap,
 } = primordials;
 
-import { pathFromURL } from "ext:deno_web/00_infra.js";
+const { pathFromURL } = core.loadExtScript("ext:deno_web/00_infra.js");
 
 /**
  * @param {BufferSource} source
@@ -242,15 +244,19 @@ class UnsafePointer {
       } else {
         pointer = op_ffi_ptr_of(value);
       }
-    } else if (isArrayBuffer(value)) {
-      if (value.length === 0) {
-        pointer = op_ffi_ptr_of_exact(new Uint8Array(value));
+    } else if (isAnyArrayBuffer(value)) {
+      // `ArrayBuffer`/`SharedArrayBuffer` expose `byteLength`, not `length`, so
+      // wrap in a `Uint8Array` and measure that to detect the empty case (the
+      // `op`s require a view anyway).
+      const view = new Uint8Array(value);
+      if (TypedArrayPrototypeGetByteLength(view) === 0) {
+        pointer = op_ffi_ptr_of_exact(view);
       } else {
-        pointer = op_ffi_ptr_of(new Uint8Array(value));
+        pointer = op_ffi_ptr_of(view);
       }
     } else {
       throw new TypeError(
-        "Expected ArrayBuffer, ArrayBufferView or UnsafeCallbackPrototype",
+        `Cannot access pointer: expected 'ArrayBuffer', 'SharedArrayBuffer', 'ArrayBufferView' or 'UnsafeCallbackPrototype', received ${typeof value}`,
       );
     }
     if (pointer) {
@@ -335,7 +341,9 @@ function getTypeSizeAndAlignment(type, cache = new SafeMap()) {
     const cached = cache.get(type);
     if (cached !== undefined) {
       if (cached === null) {
-        throw new TypeError("Recursive struct definition");
+        throw new TypeError(
+          "Cannot get pointer size: found recursive struct",
+        );
       }
       return cached;
     }
@@ -379,7 +387,7 @@ function getTypeSizeAndAlignment(type, cache = new SafeMap()) {
     case "isize":
       return [8, 8];
     default:
-      throw new TypeError(`Unsupported type: ${type}`);
+      throw new TypeError(`Cannot get pointer size, unsupported type: ${type}`);
   }
 }
 
@@ -395,7 +403,7 @@ class UnsafeCallback {
   constructor(definition, callback) {
     if (definition.nonblocking) {
       throw new TypeError(
-        "Invalid UnsafeCallback, cannot be nonblocking",
+        "Cannot construct UnsafeCallback: cannot be nonblocking",
       );
     }
     const { 0: rid, 1: pointer } = op_ffi_unsafe_callback_create(
@@ -451,7 +459,7 @@ class DynamicLibrary {
   symbols = { __proto__: null };
 
   constructor(path, symbols) {
-    ({ 0: this.#rid, 1: this.symbols } = op_ffi_load({ path, symbols }));
+    ({ 0: this.#rid, 1: this.symbols } = op_ffi_load(path, symbols));
     for (const symbol in symbols) {
       if (!ObjectHasOwn(symbols, symbol)) {
         continue;
@@ -467,7 +475,7 @@ class DynamicLibrary {
         const type = symbols[symbol].type;
         if (type === "void") {
           throw new TypeError(
-            "Foreign symbol of type 'void' is not supported.",
+            "Foreign symbol of type 'void' is not supported",
           );
         }
 
@@ -482,10 +490,11 @@ class DynamicLibrary {
           this.symbols,
           symbol,
           {
+            __proto__: null,
             configurable: false,
             enumerable: true,
-            value,
             writable: false,
+            value,
           },
         );
         continue;
@@ -502,8 +511,10 @@ class DynamicLibrary {
           this.symbols,
           symbol,
           {
+            __proto__: null,
             configurable: false,
             enumerable: true,
+            writable: false,
             value: (...parameters) => {
               if (isStructResult) {
                 const buffer = new Uint8Array(structSize);
@@ -525,7 +536,6 @@ class DynamicLibrary {
                 );
               }
             },
-            writable: false,
           },
         );
       }
@@ -539,12 +549,13 @@ class DynamicLibrary {
         );
         this.symbols[symbol] = new Function(
           "call",
+          "Uint8Array",
           `return function (${params}) {
             const buffer = new Uint8Array(${structSize});
             call(${params}${parameters.length > 0 ? ", " : ""}buffer);
             return buffer;
           }`,
-        )(call);
+        )(call, Uint8Array);
       }
     }
   }
@@ -558,10 +569,18 @@ function dlopen(path, symbols) {
   return new DynamicLibrary(pathFromURL(path), symbols);
 }
 
-export {
+function getTurbocallTarget() {
+  return op_ffi_get_turbocall_target();
+}
+
+internals.getTurbocallTarget = getTurbocallTarget;
+
+return {
   dlopen,
+  getTurbocallTarget,
   UnsafeCallback,
   UnsafeFnPointer,
   UnsafePointer,
   UnsafePointerView,
 };
+})();

@@ -1,16 +1,18 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 use deno_ast::diagnostics::Diagnostic;
 use deno_core::error::AnyError;
 use deno_core::serde_json;
+use deno_lib::util::result::js_error_downcast_ref;
 use deno_lint::diagnostic::LintDiagnostic;
 use deno_runtime::colors;
+use deno_runtime::fmt_errors::format_js_error;
 use log::info;
 use serde::Serialize;
 
 use crate::args::LintReporterKind;
 
-use super::LintError;
+const JSON_SCHEMA_VERSION: u8 = 1;
 
 pub fn create_reporter(kind: LintReporterKind) -> Box<dyn LintReporter + Send> {
   match kind {
@@ -52,7 +54,17 @@ impl LintReporter for PrettyLintReporter {
 
   fn visit_error(&mut self, file_path: &str, err: &AnyError) {
     log::error!("Error linting: {file_path}");
-    log::error!("   {err}");
+    let text = match js_error_downcast_ref(err) {
+      Some(js_error) => format_js_error(js_error, None),
+      None => format!("{err:#}"),
+    };
+    for line in text.split('\n') {
+      if line.is_empty() {
+        log::error!("");
+      } else {
+        log::error!("    {}", line);
+      }
+    }
   }
 
   fn close(&mut self, check_count: usize) {
@@ -169,16 +181,26 @@ struct JsonLintDiagnostic {
 }
 
 #[derive(Serialize)]
+struct LintError {
+  file_path: String,
+  message: String,
+}
+
+#[derive(Serialize)]
 struct JsonLintReporter {
+  version: u8,
   diagnostics: Vec<JsonLintDiagnostic>,
   errors: Vec<LintError>,
+  checked_files: Vec<String>,
 }
 
 impl JsonLintReporter {
   fn new() -> JsonLintReporter {
     JsonLintReporter {
+      version: JSON_SCHEMA_VERSION,
       diagnostics: Vec::new(),
       errors: Vec::new(),
+      checked_files: Vec::new(),
     }
   }
 }
@@ -205,6 +227,17 @@ impl LintReporter for JsonLintReporter {
       code: d.code().to_string(),
       hint: d.hint().map(|h| h.to_string()),
     });
+
+    let file_path = d
+      .specifier
+      .to_file_path()
+      .unwrap()
+      .to_string_lossy()
+      .into_owned();
+
+    if !self.checked_files.contains(&file_path) {
+      self.checked_files.push(file_path);
+    }
   }
 
   fn visit_error(&mut self, file_path: &str, err: &AnyError) {
@@ -212,12 +245,17 @@ impl LintReporter for JsonLintReporter {
       file_path: file_path.to_string(),
       message: err.to_string(),
     });
+
+    if !self.checked_files.contains(&file_path.to_string()) {
+      self.checked_files.push(file_path.to_string());
+    }
   }
 
   fn close(&mut self, _check_count: usize) {
     sort_diagnostics(&mut self.diagnostics);
+    self.checked_files.sort();
     let json = serde_json::to_string_pretty(&self);
-    #[allow(clippy::print_stdout)]
+    #[allow(clippy::print_stdout, reason = "reporter")]
     {
       println!("{}", json.unwrap());
     }

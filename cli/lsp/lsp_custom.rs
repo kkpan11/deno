@@ -1,22 +1,35 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 use deno_core::serde::Deserialize;
 use deno_core::serde::Serialize;
 use tower_lsp::lsp_types as lsp;
 
 pub const PERFORMANCE_REQUEST: &str = "deno/performance";
+pub const INFERRED_TYPE_REQUEST: &str = "deno/inferredType";
+pub const INFERRED_TYPE_COMMAND: &str = "deno.inferredType";
 pub const TASK_REQUEST: &str = "deno/taskDefinitions";
 pub const VIRTUAL_TEXT_DOCUMENT: &str = "deno/virtualTextDocument";
-pub const LATEST_DIAGNOSTIC_BATCH_INDEX: &str =
-  "deno/internalLatestDiagnosticBatchIndex";
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InferredTypeParams {
+  pub text_document: lsp::TextDocumentIdentifier,
+  pub position: lsp::Position,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InferredTypeResponse {
+  pub text: String,
+  pub range: lsp::Range,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskDefinition {
   pub name: String,
-  // TODO(nayeemrmn): Rename this to `command` in vscode_deno.
-  #[serde(rename = "detail")]
-  pub command: String,
+  pub command: Option<String>,
+  pub description: Option<String>,
   pub source_uri: lsp::Uri,
 }
 
@@ -41,9 +54,28 @@ pub struct VirtualTextDocumentParams {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct DiagnosticBatchNotificationParams {
-  pub batch_index: usize,
-  pub messages_len: usize,
+#[serde(rename_all = "camelCase")]
+pub struct DenoConfigurationData {
+  pub scope_uri: lsp::Uri,
+  pub workspace_root_scope_uri: Option<lsp::Uri>,
+  pub deno_json: Option<lsp::TextDocumentIdentifier>,
+  pub package_json: Option<lsp::TextDocumentIdentifier>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DidRefreshDenoConfigurationTreeNotificationParams {
+  pub data: Vec<DenoConfigurationData>,
+  pub deno_dir_npm_folder_uri: Option<lsp::Uri>,
+}
+
+pub enum DidRefreshDenoConfigurationTreeNotification {}
+
+impl lsp::notification::Notification
+  for DidRefreshDenoConfigurationTreeNotification
+{
+  type Params = DidRefreshDenoConfigurationTreeNotificationParams;
+  const METHOD: &'static str = "deno/didRefreshDenoConfigurationTree";
 }
 
 #[derive(Debug, Eq, Hash, PartialEq, Copy, Clone, Deserialize, Serialize)]
@@ -88,13 +120,15 @@ pub struct DidChangeDenoConfigurationNotificationParams {
   pub changes: Vec<DenoConfigurationChangeEvent>,
 }
 
+// TODO(nayeemrmn): This is being replaced by
+// `DidRefreshDenoConfigurationTreeNotification` for Deno > v2.0.0. Remove it
+// soon.
 pub enum DidChangeDenoConfigurationNotification {}
 
 impl lsp::notification::Notification
   for DidChangeDenoConfigurationNotification
 {
   type Params = DidChangeDenoConfigurationNotificationParams;
-
   const METHOD: &'static str = "deno/didChangeDenoConfiguration";
 }
 
@@ -102,7 +136,6 @@ pub enum DidUpgradeCheckNotification {}
 
 impl lsp::notification::Notification for DidUpgradeCheckNotification {
   type Params = DidUpgradeCheckNotificationParams;
-
   const METHOD: &'static str = "deno/didUpgradeCheck";
 }
 
@@ -120,11 +153,19 @@ pub struct DidUpgradeCheckNotificationParams {
 }
 
 /// This notification is only sent for testing purposes
-/// in order to know what the latest diagnostics are.
-pub enum DiagnosticBatchNotification {}
+/// in order to group diagnostics.
+pub enum DiagnosticBatchStartNotification {}
 
-impl lsp::notification::Notification for DiagnosticBatchNotification {
-  type Params = DiagnosticBatchNotificationParams;
+impl lsp::notification::Notification for DiagnosticBatchStartNotification {
+  type Params = ();
+  const METHOD: &'static str = "deno/internalTestDiagnosticBatchStart";
+}
 
-  const METHOD: &'static str = "deno/internalTestDiagnosticBatch";
+/// This notification is only sent for testing purposes
+/// in order to group diagnostics.
+pub enum DiagnosticBatchEndNotification {}
+
+impl lsp::notification::Notification for DiagnosticBatchEndNotification {
+  type Params = ();
+  const METHOD: &'static str = "deno/internalTestDiagnosticBatchEnd";
 }

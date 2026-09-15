@@ -1,486 +1,594 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 use std::env;
+use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 
-use deno_core::snapshot::*;
 use deno_runtime::*;
-mod shared;
 
-mod ts {
-  use super::*;
-  use deno_core::error::custom_error;
-  use deno_core::error::AnyError;
-  use deno_core::op2;
-  use deno_core::OpState;
-  use deno_runtime::deno_node::SUPPORTED_BUILTIN_NODE_MODULES;
-  use serde::Serialize;
-  use std::collections::HashMap;
-  use std::io::Write;
-  use std::path::Path;
-  use std::path::PathBuf;
-
-  #[derive(Debug, Serialize)]
-  #[serde(rename_all = "camelCase")]
-  struct BuildInfoResponse {
-    build_specifier: String,
-    libs: Vec<String>,
-    node_built_in_module_names: Vec<String>,
-  }
-
-  #[op2]
-  #[serde]
-  fn op_build_info(state: &mut OpState) -> BuildInfoResponse {
-    let build_specifier = "asset:///bootstrap.ts".to_string();
-    let build_libs = state
-      .borrow::<Vec<&str>>()
-      .iter()
-      .map(|s| s.to_string())
-      .collect();
-    let node_built_in_module_names = SUPPORTED_BUILTIN_NODE_MODULES
-      .iter()
-      .map(|s| s.to_string())
-      .collect();
-    BuildInfoResponse {
-      build_specifier,
-      libs: build_libs,
-      node_built_in_module_names,
-    }
-  }
-
-  #[op2(fast)]
-  fn op_is_node_file() -> bool {
-    false
-  }
-
-  #[op2]
-  #[string]
-  fn op_script_version(
-    _state: &mut OpState,
-    #[string] _arg: &str,
-  ) -> Result<Option<String>, AnyError> {
-    Ok(Some("1".to_string()))
-  }
-
-  #[derive(Debug, Serialize)]
-  #[serde(rename_all = "camelCase")]
-  struct LoadResponse {
-    data: String,
-    version: String,
-    script_kind: i32,
-  }
-
-  #[op2]
-  #[serde]
-  // using the same op that is used in `tsc.rs` for loading modules and reading
-  // files, but a slightly different implementation at build time.
-  fn op_load(
-    state: &mut OpState,
-    #[string] load_specifier: &str,
-  ) -> Result<LoadResponse, AnyError> {
-    let op_crate_libs = state.borrow::<HashMap<&str, PathBuf>>();
-    let path_dts = state.borrow::<PathBuf>();
-    let re_asset = lazy_regex::regex!(r"asset:/{3}lib\.(\S+)\.d\.ts");
-    let build_specifier = "asset:///bootstrap.ts";
-
-    // we need a basic file to send to tsc to warm it up.
-    if load_specifier == build_specifier {
-      Ok(LoadResponse {
-        data: r#"Deno.writeTextFile("hello.txt", "hello deno!");"#.to_string(),
-        version: "1".to_string(),
-        // this corresponds to `ts.ScriptKind.TypeScript`
-        script_kind: 3,
-      })
-      // specifiers come across as `asset:///lib.{lib_name}.d.ts` and we need to
-      // parse out just the name so we can lookup the asset.
-    } else if let Some(caps) = re_asset.captures(load_specifier) {
-      if let Some(lib) = caps.get(1).map(|m| m.as_str()) {
-        // if it comes from an op crate, we were supplied with the path to the
-        // file.
-        let path = if let Some(op_crate_lib) = op_crate_libs.get(lib) {
-          PathBuf::from(op_crate_lib).canonicalize()?
-          // otherwise we will generate the path ourself
-        } else {
-          path_dts.join(format!("lib.{lib}.d.ts"))
-        };
-        let data = std::fs::read_to_string(path)?;
-        Ok(LoadResponse {
-          data,
-          version: "1".to_string(),
-          // this corresponds to `ts.ScriptKind.TypeScript`
-          script_kind: 3,
-        })
-      } else {
-        Err(custom_error(
-          "InvalidSpecifier",
-          format!("An invalid specifier was requested: {}", load_specifier),
-        ))
-      }
-    } else {
-      Err(custom_error(
-        "InvalidSpecifier",
-        format!("An invalid specifier was requested: {}", load_specifier),
-      ))
-    }
-  }
-
-  deno_core::extension!(deno_tsc,
-    ops = [op_build_info, op_is_node_file, op_load, op_script_version],
-    js = [
-      dir "tsc",
-      "00_typescript.js",
-      "99_main_compiler.js",
-    ],
-    options = {
-      op_crate_libs: HashMap<&'static str, PathBuf>,
-      build_libs: Vec<&'static str>,
-      path_dts: PathBuf,
-    },
-    state = |state, options| {
-      state.put(options.op_crate_libs);
-      state.put(options.build_libs);
-      state.put(options.path_dts);
-    },
-  );
-
-  pub fn create_compiler_snapshot(snapshot_path: PathBuf, cwd: &Path) {
-    // libs that are being provided by op crates.
-    let mut op_crate_libs = HashMap::new();
-    op_crate_libs.insert("deno.cache", deno_cache::get_declaration());
-    op_crate_libs.insert("deno.console", deno_console::get_declaration());
-    op_crate_libs.insert("deno.url", deno_url::get_declaration());
-    op_crate_libs.insert("deno.web", deno_web::get_declaration());
-    op_crate_libs.insert("deno.fetch", deno_fetch::get_declaration());
-    op_crate_libs.insert("deno.webgpu", deno_webgpu_get_declaration());
-    op_crate_libs.insert("deno.websocket", deno_websocket::get_declaration());
-    op_crate_libs.insert("deno.webstorage", deno_webstorage::get_declaration());
-    op_crate_libs.insert("deno.canvas", deno_canvas::get_declaration());
-    op_crate_libs.insert("deno.crypto", deno_crypto::get_declaration());
-    op_crate_libs.insert(
-      "deno.broadcast_channel",
-      deno_broadcast_channel::get_declaration(),
-    );
-    op_crate_libs.insert("deno.net", deno_net::get_declaration());
-
-    // ensure we invalidate the build properly.
-    for (_, path) in op_crate_libs.iter() {
-      println!("cargo:rerun-if-changed={}", path.display());
-    }
-
-    // libs that should be loaded into the isolate before snapshotting.
-    let libs = vec![
-      // Deno custom type libraries
-      "deno.window",
-      "deno.worker",
-      "deno.shared_globals",
-      "deno.ns",
-      "deno.unstable",
-      // Deno built-in type libraries
-      "decorators",
-      "decorators.legacy",
-      "es5",
-      "es2015.collection",
-      "es2015.core",
-      "es2015",
-      "es2015.generator",
-      "es2015.iterable",
-      "es2015.promise",
-      "es2015.proxy",
-      "es2015.reflect",
-      "es2015.symbol",
-      "es2015.symbol.wellknown",
-      "es2016.array.include",
-      "es2016.intl",
-      "es2016",
-      "es2017",
-      "es2017.date",
-      "es2017.intl",
-      "es2017.object",
-      "es2017.sharedmemory",
-      "es2017.string",
-      "es2017.typedarrays",
-      "es2018.asyncgenerator",
-      "es2018.asynciterable",
-      "es2018",
-      "es2018.intl",
-      "es2018.promise",
-      "es2018.regexp",
-      "es2019.array",
-      "es2019",
-      "es2019.intl",
-      "es2019.object",
-      "es2019.string",
-      "es2019.symbol",
-      "es2020.bigint",
-      "es2020",
-      "es2020.date",
-      "es2020.intl",
-      "es2020.number",
-      "es2020.promise",
-      "es2020.sharedmemory",
-      "es2020.string",
-      "es2020.symbol.wellknown",
-      "es2021",
-      "es2021.intl",
-      "es2021.promise",
-      "es2021.string",
-      "es2021.weakref",
-      "es2022",
-      "es2022.array",
-      "es2022.error",
-      "es2022.intl",
-      "es2022.object",
-      "es2022.regexp",
-      "es2022.sharedmemory",
-      "es2022.string",
-      "es2023",
-      "es2023.array",
-      "es2023.collection",
-      "es2023.intl",
-      "esnext",
-      "esnext.array",
-      "esnext.collection",
-      "esnext.decorators",
-      "esnext.disposable",
-      "esnext.intl",
-      "esnext.object",
-      "esnext.promise",
-      "esnext.regexp",
-      "esnext.string",
-    ];
-
-    let path_dts = cwd.join("tsc/dts");
-    // ensure we invalidate the build properly.
-    for name in libs.iter() {
-      println!(
-        "cargo:rerun-if-changed={}",
-        path_dts.join(format!("lib.{name}.d.ts")).display()
-      );
-    }
-
-    // create a copy of the vector that includes any op crate libs to be passed
-    // to the JavaScript compiler to build into the snapshot
-    let mut build_libs = libs.clone();
-    for (op_lib, _) in op_crate_libs.iter() {
-      build_libs.push(op_lib.to_owned());
-    }
-
-    // used in the tests to verify that after snapshotting it has the same number
-    // of lib files loaded and hasn't included any ones lazily loaded from Rust
-    std::fs::write(
-      PathBuf::from(env::var_os("OUT_DIR").unwrap())
-        .join("lib_file_names.json"),
-      serde_json::to_string(&build_libs).unwrap(),
-    )
-    .unwrap();
-
-    let output = create_snapshot(
-      CreateSnapshotOptions {
-        cargo_manifest_dir: env!("CARGO_MANIFEST_DIR"),
-        startup_snapshot: None,
-        extensions: vec![deno_tsc::init_ops_and_esm(
-          op_crate_libs,
-          build_libs,
-          path_dts,
-        )],
-        extension_transpiler: None,
-        with_runtime_cb: None,
-        skip_op_registration: false,
-      },
-      None,
-    )
-    .unwrap();
-
-    // NOTE(bartlomieju): Compressing the TSC snapshot in debug build took
-    // ~45s on M1 MacBook Pro; without compression it took ~1s.
-    // Thus we're not using compressed snapshot, trading off
-    // a lot of build time for some startup time in debug build.
-    let mut file = std::fs::File::create(snapshot_path).unwrap();
-    if cfg!(debug_assertions) {
-      file.write_all(&output.output).unwrap();
-    } else {
-      let mut vec = Vec::with_capacity(output.output.len());
-      vec.extend((output.output.len() as u32).to_le_bytes());
-      vec.extend_from_slice(
-        &zstd::bulk::compress(&output.output, 22)
-          .expect("snapshot compression failed"),
-      );
-      file.write_all(&vec).unwrap();
-    }
-
-    for path in output.files_loaded_during_snapshot {
-      println!("cargo:rerun-if-changed={}", path.display());
-    }
-  }
-
-  pub(crate) fn version() -> String {
-    let file_text = std::fs::read_to_string("tsc/00_typescript.js").unwrap();
-    let version_text = " version = \"";
-    for line in file_text.lines() {
-      if let Some(index) = line.find(version_text) {
-        let remaining_line = &line[index + version_text.len()..];
-        return remaining_line[..remaining_line.find('"').unwrap()].to_string();
-      }
-    }
-    panic!("Could not find ts version.")
+fn compress_decls(out_dir: &Path) {
+  let decls = [
+    "lib.deno.ns.d.ts",
+    "lib.deno.unstable.d.ts",
+    "lib.deno.window.d.ts",
+    "lib.deno.worker.d.ts",
+    "lib.deno.shared_globals.d.ts",
+    "lib.deno.desktop.d.ts",
+    "lib.deno.unstable.d.ts",
+    "lib.deno_console.d.ts",
+    "lib.deno_url.d.ts",
+    "lib.deno_web.d.ts",
+    "lib.deno_fetch.d.ts",
+    "lib.deno_websocket.d.ts",
+    "lib.deno_webstorage.d.ts",
+    "lib.deno_webgpu.d.ts",
+    "lib.deno_canvas.d.ts",
+    "lib.deno_crypto.d.ts",
+    "lib.deno_cache.d.ts",
+    "lib.deno_net.d.ts",
+    "lib.deno_broadcast_channel.d.ts",
+    "lib.decorators.d.ts",
+    "lib.decorators.legacy.d.ts",
+    "lib.dom.asynciterable.d.ts",
+    "lib.dom.d.ts",
+    "lib.dom.extras.d.ts",
+    "lib.dom.iterable.d.ts",
+    "lib.es2015.collection.d.ts",
+    "lib.es2015.core.d.ts",
+    "lib.es2015.d.ts",
+    "lib.es2015.generator.d.ts",
+    "lib.es2015.iterable.d.ts",
+    "lib.es2015.promise.d.ts",
+    "lib.es2015.proxy.d.ts",
+    "lib.es2015.reflect.d.ts",
+    "lib.es2015.symbol.d.ts",
+    "lib.es2015.symbol.wellknown.d.ts",
+    "lib.es2016.array.include.d.ts",
+    "lib.es2016.d.ts",
+    "lib.es2016.full.d.ts",
+    "lib.es2016.intl.d.ts",
+    "lib.es2017.arraybuffer.d.ts",
+    "lib.es2017.d.ts",
+    "lib.es2017.date.d.ts",
+    "lib.es2017.full.d.ts",
+    "lib.es2017.intl.d.ts",
+    "lib.es2017.object.d.ts",
+    "lib.es2017.sharedmemory.d.ts",
+    "lib.es2017.string.d.ts",
+    "lib.es2017.typedarrays.d.ts",
+    "lib.es2018.asyncgenerator.d.ts",
+    "lib.es2018.asynciterable.d.ts",
+    "lib.es2018.d.ts",
+    "lib.es2018.full.d.ts",
+    "lib.es2018.intl.d.ts",
+    "lib.es2018.promise.d.ts",
+    "lib.es2018.regexp.d.ts",
+    "lib.es2019.array.d.ts",
+    "lib.es2019.d.ts",
+    "lib.es2019.full.d.ts",
+    "lib.es2019.intl.d.ts",
+    "lib.es2019.object.d.ts",
+    "lib.es2019.string.d.ts",
+    "lib.es2019.symbol.d.ts",
+    "lib.es2020.bigint.d.ts",
+    "lib.es2020.d.ts",
+    "lib.es2020.date.d.ts",
+    "lib.es2020.full.d.ts",
+    "lib.es2020.intl.d.ts",
+    "lib.es2020.number.d.ts",
+    "lib.es2020.promise.d.ts",
+    "lib.es2020.sharedmemory.d.ts",
+    "lib.es2020.string.d.ts",
+    "lib.es2020.symbol.wellknown.d.ts",
+    "lib.es2021.d.ts",
+    "lib.es2021.full.d.ts",
+    "lib.es2021.intl.d.ts",
+    "lib.es2021.promise.d.ts",
+    "lib.es2021.string.d.ts",
+    "lib.es2021.weakref.d.ts",
+    "lib.es2022.array.d.ts",
+    "lib.es2022.d.ts",
+    "lib.es2022.error.d.ts",
+    "lib.es2022.full.d.ts",
+    "lib.es2022.intl.d.ts",
+    "lib.es2022.object.d.ts",
+    "lib.es2022.regexp.d.ts",
+    "lib.es2022.sharedmemory.d.ts",
+    "lib.es2022.string.d.ts",
+    "lib.es2023.array.d.ts",
+    "lib.es2023.collection.d.ts",
+    "lib.es2023.d.ts",
+    "lib.es2023.full.d.ts",
+    "lib.es2023.intl.d.ts",
+    "lib.es2024.arraybuffer.d.ts",
+    "lib.es2024.collection.d.ts",
+    "lib.es2024.d.ts",
+    "lib.es2024.full.d.ts",
+    "lib.es2024.object.d.ts",
+    "lib.es2024.promise.d.ts",
+    "lib.es2024.regexp.d.ts",
+    "lib.es2024.sharedmemory.d.ts",
+    "lib.es2024.string.d.ts",
+    "lib.es2025.collection.d.ts",
+    "lib.es2025.d.ts",
+    "lib.es2025.float16.d.ts",
+    "lib.es2025.full.d.ts",
+    "lib.es2025.intl.d.ts",
+    "lib.es2025.iterator.d.ts",
+    "lib.es2025.promise.d.ts",
+    "lib.es2025.regexp.d.ts",
+    "lib.es5.d.ts",
+    "lib.es6.d.ts",
+    "lib.esnext.array.d.ts",
+    "lib.esnext.collection.d.ts",
+    "lib.esnext.d.ts",
+    "lib.esnext.date.d.ts",
+    "lib.esnext.decorators.d.ts",
+    "lib.esnext.disposable.d.ts",
+    "lib.esnext.error.d.ts",
+    "lib.esnext.full.d.ts",
+    "lib.esnext.intl.d.ts",
+    "lib.esnext.object.d.ts",
+    "lib.esnext.promise.d.ts",
+    "lib.esnext.regexp.d.ts",
+    "lib.esnext.sharedmemory.d.ts",
+    "lib.esnext.string.d.ts",
+    "lib.esnext.temporal.d.ts",
+    "lib.esnext.typedarrays.d.ts",
+    "lib.node.d.ts",
+    "lib.scripthost.d.ts",
+    "lib.webworker.asynciterable.d.ts",
+    "lib.webworker.d.ts",
+    "lib.webworker.importscripts.d.ts",
+    "lib.webworker.iterable.d.ts",
+  ];
+  for decl in decls {
+    let file = format!("./tsc/dts/{decl}");
+    compress_source(out_dir, &file);
   }
 }
 
-#[cfg(not(feature = "hmr"))]
-fn create_cli_snapshot(snapshot_path: PathBuf) {
-  use deno_runtime::ops::bootstrap::SnapshotOptions;
+fn process_node_types(out_dir: &Path) {
+  #[allow(clippy::disallowed_methods, reason = "build code")]
+  let root_dir = Path::new(".").canonicalize().unwrap();
+  let dts_dir = root_dir.join("tsc").join("dts");
+  let node_dir = dts_dir.join("node");
 
-  let snapshot_options = SnapshotOptions {
-    ts_version: ts::version(),
-    v8_version: deno_core::v8::VERSION_STRING,
-    target: std::env::var("TARGET").unwrap(),
+  // Recursively find all .d.ts files in the node directory
+  fn visit_dirs(dir: &Path, cb: &mut dyn FnMut(&Path)) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+      let entry = entry?;
+      let path = entry.path();
+      if path.is_dir() {
+        visit_dirs(&path, cb)?;
+      } else if path.extension().and_then(|s| s.to_str()) == Some("ts")
+        || path.extension().and_then(|s| s.to_str()) == Some("cts")
+      {
+        cb(&path);
+      }
+    }
+    Ok(())
+  }
+
+  let mut paths = Vec::new();
+  visit_dirs(&node_dir, &mut |path| {
+    paths.push(path.to_path_buf());
+  })
+  .unwrap();
+
+  // Sort for deterministic builds
+  paths.sort();
+
+  for path in &paths {
+    // print for each path instead of directory because
+    // the mtime cache works off files and not directories
+    println!("cargo:rerun-if-changed={}", path.display());
+  }
+
+  // Compress all the files if release
+  if !cfg!(debug_assertions) && std::env::var("CARGO_FEATURE_HMR").is_err() {
+    for path in &paths {
+      let relative = path.strip_prefix(&root_dir).unwrap();
+      compress_source(out_dir, &relative.to_string_lossy());
+    }
+  }
+
+  // Generate a Rust file with the node type entries (always, for both debug and release)
+  let mut generated = String::from("// Auto-generated by build.rs\n");
+  generated.push_str("macro_rules! node_type_libs {\n");
+  generated.push_str("  () => {\n");
+  generated.push_str("    [\n");
+
+  for path in paths {
+    let relative = path.strip_prefix(&dts_dir).unwrap();
+    let relative_str = relative.to_string_lossy().replace('\\', "/");
+    generated.push_str(&format!(
+      "      maybe_compressed_static_asset!(\"{}\", false),\n",
+      relative_str
+    ));
+  }
+
+  generated.push_str("    ]\n");
+  generated.push_str("  };\n");
+  generated.push_str("}\n");
+
+  std::fs::write(out_dir.join("node_types.rs"), generated).unwrap();
+}
+
+fn compress_source(out_dir: &Path, file: &str) {
+  #[allow(clippy::disallowed_methods, reason = "build code")]
+  let path = Path::new(file)
+    .canonicalize()
+    .unwrap_or_else(|_| panic!("expected file \"{file}\" to exist"));
+  let contents = std::fs::read(&path).unwrap();
+
+  println!("cargo:rerun-if-changed={}", path.display());
+
+  let compressed = zstd::bulk::compress(&contents, 19).unwrap();
+  let mut out = out_dir.join(file.trim_start_matches("../"));
+  let mut ext = out
+    .extension()
+    .map(|s| s.to_string_lossy())
+    .unwrap_or_default()
+    .into_owned();
+  ext.push_str(".zstd");
+  out.set_extension(ext);
+  std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+  let mut file = std::fs::OpenOptions::new()
+    .create(true)
+    .truncate(true)
+    .write(true)
+    .open(out)
+    .unwrap();
+  file
+    .write_all(&(contents.len() as u32).to_le_bytes())
+    .unwrap();
+
+  file.write_all(&compressed).unwrap();
+}
+
+fn compress_sources(out_dir: &Path) {
+  compress_decls(out_dir);
+
+  let ext_sources = [
+    "./tsc/99_main_compiler.js",
+    "./tsc/97_ts_host.js",
+    "./tsc/98_lsp.js",
+    "./tsc/00_typescript.js",
+  ];
+  for ext_source in ext_sources {
+    compress_source(out_dir, ext_source);
+  }
+}
+
+/// Read the pinned `laufey` capi crate version from the workspace Cargo.lock and
+/// expose it as the `LAUFEY_VERSION` rustc env var. Desktop backend downloads are
+/// resolved against `github.com/littledivy/laufey/releases/tag/v{LAUFEY_VERSION}`, so
+/// tying this to Cargo.lock keeps a single source of truth.
+///
+/// Also asserts that `cli/laufey_sums.lock` (the trust anchor for those downloads)
+/// pins the same version, failing the build if someone bumps the crate without
+/// refreshing the digests. This is a pure consistency check between two
+/// checked-in files, so it runs here rather than at runtime — a stale lock file
+/// becomes a compile error instead of a first-launch failure.
+fn emit_laufey_version() {
+  let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+  let workspace_lock = Path::new(&manifest_dir).join("../Cargo.lock");
+  println!("cargo:rerun-if-changed={}", workspace_lock.display());
+
+  // Prefer the workspace Cargo.lock as the source of truth: it pins the `laufey`
+  // crate version and we cross-check `cli/laufey_sums.lock` against it.
+  //
+  // During `cargo publish` the crate is verified in an isolated package dir
+  // where the workspace lock is absent. The crate-local `Cargo.lock` cargo
+  // bundles into the tarball is no help here either: `laufey` is a dependency
+  // of `denort_desktop`, not of the `deno` crate, so it never appears in the
+  // `deno` crate's own resolved lockfile. Fall back to the `# version:`
+  // directive committed in `cli/laufey_sums.lock`, which is always bundled into
+  // the published tarball.
+  if let Some(version) = laufey_version_from_lock(&workspace_lock) {
+    println!("cargo:rustc-env=LAUFEY_VERSION={version}");
+    check_laufey_pinned_sums_version(&manifest_dir, &version);
+    return;
+  }
+
+  if let Some(version) = laufey_version_from_sums(&manifest_dir) {
+    println!("cargo:rustc-env=LAUFEY_VERSION={version}");
+  }
+}
+
+/// Parse the pinned `laufey` crate version out of a Cargo.lock file. Returns
+/// `None` when the file is missing or has no `laufey` package entry.
+fn laufey_version_from_lock(lock_path: &Path) -> Option<String> {
+  let lock = std::fs::read_to_string(lock_path).ok()?;
+
+  let mut in_laufey = false;
+  for line in lock.lines() {
+    if line == "name = \"laufey\"" {
+      in_laufey = true;
+      continue;
+    }
+    if in_laufey {
+      if let Some(rest) = line.strip_prefix("version = \"")
+        && let Some(version) = rest.strip_suffix('"')
+      {
+        return Some(version.to_string());
+      }
+      if line.starts_with("[[package]]") {
+        return None;
+      }
+    }
+  }
+  None
+}
+
+/// Read the `# version: vX.Y.Z` directive from `cli/laufey_sums.lock`. This file
+/// is committed and bundled into the published crate, so it is the version
+/// source of truth during the `cargo publish` verification build where no
+/// Cargo.lock pins `laufey`.
+fn laufey_version_from_sums(manifest_dir: &str) -> Option<String> {
+  let sums_path = Path::new(manifest_dir).join("laufey_sums.lock");
+  println!("cargo:rerun-if-changed={}", sums_path.display());
+
+  let sums = std::fs::read_to_string(&sums_path).ok()?;
+  for line in sums.lines() {
+    let Some(rest) = line.trim_start().strip_prefix('#') else {
+      continue;
+    };
+    let Some(version) = rest.trim().strip_prefix("version:") else {
+      continue;
+    };
+    let pinned = version.trim().trim_start_matches('v');
+    if !pinned.is_empty() {
+      return Some(pinned.to_string());
+    }
+  }
+  None
+}
+
+/// Confirm `cli/laufey_sums.lock` targets `laufey_version`. The lock file carries a
+/// `# version: vX.Y.Z` directive that must match the `laufey` crate version
+/// the binary is built against; a mismatch means the pinned digests are stale.
+fn check_laufey_pinned_sums_version(manifest_dir: &str, laufey_version: &str) {
+  let Some(pinned) = laufey_version_from_sums(manifest_dir) else {
+    panic!(
+      "cli/laufey_sums.lock has no pinned laufey version — populate it for \
+       v{laufey_version} before building"
+    );
+  };
+  if pinned != laufey_version {
+    panic!(
+      "cli/laufey_sums.lock pins Laufey v{pinned} but this build expects \
+       v{laufey_version} — refresh the lock file from the upstream SHA256SUMS"
+    );
+  }
+}
+
+/// SHA-256 digests of the vendored AppImage Type-2 runtime stubs (from
+/// `cli/tools/appimage_runtime/README.md`). Verified at build time so a
+/// silent local modification (or a bad rebase) of those checked-in binaries
+/// can't slip into a release build undetected.
+const APPIMAGE_RUNTIME_HASHES: &[(&str, &str)] = &[
+  (
+    "tools/appimage_runtime/runtime-x86_64",
+    "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d",
+  ),
+  (
+    "tools/appimage_runtime/runtime-aarch64",
+    "00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444",
+  ),
+];
+
+fn check_appimage_runtime_hashes() {
+  use sha2::Digest;
+  let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+  for (rel, expected) in APPIMAGE_RUNTIME_HASHES {
+    let path = Path::new(&manifest_dir).join(rel);
+    println!("cargo:rerun-if-changed={}", path.display());
+    let bytes = match std::fs::read(&path) {
+      Ok(b) => b,
+      Err(_) => continue,
+    };
+    let actual = format!("{:x}", sha2::Sha256::digest(&bytes));
+    if actual != *expected {
+      panic!(
+        "checked-in AppImage runtime stub {} does not match the SHA-256 \
+         pinned in cli/tools/appimage_runtime/README.md (expected {expected}, got {actual}). \
+         If this update is intentional, refresh both the binary and the README.",
+        path.display()
+      );
+    }
+  }
+}
+
+fn compress_appimage_runtimes(out_dir: &Path) {
+  let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+  let output_dir = out_dir.join("appimage_runtime");
+  std::fs::create_dir_all(&output_dir).unwrap();
+
+  for (rel, _) in APPIMAGE_RUNTIME_HASHES {
+    let path = Path::new(&manifest_dir).join(rel);
+    let contents = std::fs::read(&path).unwrap();
+    let compressed = zstd::bulk::compress(&contents, 19).unwrap();
+    let mut output = Vec::with_capacity(4 + compressed.len());
+    output.extend_from_slice(&(contents.len() as u32).to_le_bytes());
+    output.extend_from_slice(&compressed);
+
+    let file_name = path.file_name().unwrap().to_string_lossy();
+    std::fs::write(output_dir.join(format!("{file_name}.zstd")), output)
+      .unwrap();
+  }
+}
+
+fn emit_dts_rerun_if_changed() {
+  let dts_dir = Path::new("tsc/dts");
+  for entry in std::fs::read_dir(dts_dir).unwrap() {
+    let entry = entry.unwrap();
+    let path = entry.path();
+    if path.extension().and_then(|s| s.to_str()) == Some("ts") {
+      println!("cargo:rerun-if-changed={}", path.display());
+    }
+  }
+}
+
+#[allow(clippy::disallowed_methods, reason = "build code")]
+fn emit_startup_order_link_args(out_dir: &Path) {
+  const ENABLE_ENV: &str = "DENO_USE_STARTUP_ORDER";
+  const ORDER_FILE_ENV: &str = "DENO_STARTUP_ORDER_FILE";
+
+  println!("cargo:rerun-if-env-changed={ENABLE_ENV}");
+  println!("cargo:rerun-if-env-changed={ORDER_FILE_ENV}");
+
+  if env::var_os(ENABLE_ENV).is_none() {
+    return;
+  }
+  if env::var(ENABLE_ENV).ok().as_deref() != Some("1") {
+    panic!("{ENABLE_ENV} must be unset or set to 1");
+  }
+
+  let profile = env::var("PROFILE").unwrap();
+  if profile != "release" {
+    panic!("startup ordering is only supported by the release profile");
+  }
+
+  let target = env::var("TARGET").unwrap();
+  match target.as_str() {
+    "aarch64-apple-darwin"
+    | "aarch64-unknown-linux-gnu"
+    | "x86_64-unknown-linux-gnu" => {}
+    _ => return,
+  }
+
+  let source =
+    PathBuf::from(env::var_os(ORDER_FILE_ENV).unwrap_or_else(|| {
+      panic!(
+        "{ORDER_FILE_ENV} must point to an order generated from the baseline \
+       release binary using the default linker layout"
+      )
+    }));
+  let source = source.canonicalize().unwrap_or_else(|error| {
+    panic!(
+      "failed to resolve startup order {}: {error}",
+      source.display()
+    )
+  });
+  println!("cargo:rerun-if-changed={}", source.display());
+
+  let contents = if source.extension().is_some_and(|ext| ext == "zst") {
+    let compressed = std::fs::read(&source).unwrap_or_else(|error| {
+      panic!("failed to read startup order {}: {error}", source.display())
+    });
+    zstd::stream::decode_all(compressed.as_slice()).unwrap_or_else(|error| {
+      panic!(
+        "failed to decompress startup order {}: {error}",
+        source.display()
+      )
+    })
+  } else {
+    std::fs::read(&source).unwrap_or_else(|error| {
+      panic!("failed to read startup order {}: {error}", source.display())
+    })
   };
 
-  deno_runtime::snapshot::create_runtime_snapshot(
-    snapshot_path,
-    snapshot_options,
-    vec![],
-  );
-}
+  // Always use the same linker path for generated orders. Full-LTO output can
+  // change when only the order-file path changes.
+  let order_file = out_dir.join(format!("startup-order-{target}.order"));
+  std::fs::write(&order_file, contents).unwrap_or_else(|error| {
+    panic!(
+      "failed to write startup order {}: {error}",
+      order_file.display()
+    )
+  });
 
-fn git_commit_hash() -> String {
-  if let Ok(output) = std::process::Command::new("git")
-    .arg("rev-list")
-    .arg("-1")
-    .arg("HEAD")
-    .output()
-  {
-    if output.status.success() {
-      std::str::from_utf8(&output.stdout[..40])
-        .unwrap()
-        .to_string()
-    } else {
-      // When not in git repository
-      // (e.g. when the user install by `cargo install deno`)
-      "UNKNOWN".to_string()
+  let contents = std::fs::read_to_string(&order_file).unwrap_or_else(|error| {
+    panic!(
+      "failed to validate startup order {}: {error}",
+      order_file.display()
+    )
+  });
+  let symbol_count = contents
+    .lines()
+    .filter(|line| !line.is_empty() && !line.starts_with('#'))
+    .count();
+  if symbol_count < 1_000 {
+    panic!(
+      "startup order {} has only {symbol_count} symbols",
+      order_file.display()
+    );
+  }
+
+  let order_file = order_file.canonicalize().unwrap();
+  match target.as_str() {
+    "aarch64-apple-darwin" => println!(
+      "cargo:rustc-link-arg-bin=deno=-Wl,-order_file,{}",
+      order_file.display()
+    ),
+    "aarch64-unknown-linux-gnu" | "x86_64-unknown-linux-gnu" => {
+      println!(
+        "cargo:rustc-link-arg-bin=deno=-Wl,--symbol-ordering-file={}",
+        order_file.display()
+      );
+      println!("cargo:rustc-link-arg-bin=deno=-Wl,--no-warn-symbol-ordering");
     }
-  } else {
-    // When there is no git command for some reason
-    "UNKNOWN".to_string()
+    _ => unreachable!(),
   }
 }
 
 fn main() {
+  let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+
+  check_appimage_runtime_hashes();
+  compress_appimage_runtimes(&out_dir);
+
   // Skip building from docs.rs.
   if env::var_os("DOCS_RS").is_some() {
     return;
   }
 
+  deno_napi::print_linker_flags("deno");
+  deno_webgpu::print_linker_flags("deno");
+
   // Host snapshots won't work when cross compiling.
   let target = env::var("TARGET").unwrap();
   let host = env::var("HOST").unwrap();
   let skip_cross_check =
-    env::var("DENO_SKIP_CROSS_BUILD_CHECK").map_or(false, |v| v == "1");
+    env::var("DENO_SKIP_CROSS_BUILD_CHECK").is_ok_and(|v| v == "1");
   if !skip_cross_check && target != host {
     panic!("Cross compiling with snapshot is not supported.");
   }
 
-  let symbols_file_name = match env::consts::OS {
-    "android" | "freebsd" | "openbsd" => {
-      "generated_symbol_exports_list_linux.def".to_string()
-    }
-    os => format!("generated_symbol_exports_list_{}.def", os),
-  };
-  let symbols_path = std::path::Path::new("napi")
-    .join(symbols_file_name)
-    .canonicalize()
-    .expect(
-        "Missing symbols list! Generate using tools/napi/generate_symbols_lists.js",
-    );
-
-  #[cfg(target_os = "windows")]
-  println!(
-    "cargo:rustc-link-arg-bin=deno=/DEF:{}",
-    symbols_path.display()
-  );
-
-  #[cfg(target_os = "macos")]
-  println!(
-    "cargo:rustc-link-arg-bin=deno=-Wl,-exported_symbols_list,{}",
-    symbols_path.display()
-  );
-
-  #[cfg(target_os = "linux")]
-  {
-    // If a custom compiler is set, the glibc version is not reliable.
-    // Here, we assume that if a custom compiler is used, that it will be modern enough to support a dynamic symbol list.
-    if env::var("CC").is_err()
-      && glibc_version::get_version()
-        .map(|ver| ver.major <= 2 && ver.minor < 35)
-        .unwrap_or(false)
-    {
-      println!("cargo:warning=Compiling with all symbols exported, this will result in a larger binary. Please use glibc 2.35 or later for an optimised build.");
-      println!("cargo:rustc-link-arg-bin=deno=-rdynamic");
-    } else {
-      println!(
-        "cargo:rustc-link-arg-bin=deno=-Wl,--export-dynamic-symbol-list={}",
-        symbols_path.display()
-      );
-    }
-  }
-
-  #[cfg(target_os = "android")]
-  println!(
-    "cargo:rustc-link-arg-bin=deno=-Wl,--export-dynamic-symbol-list={}",
-    symbols_path.display()
-  );
-
   // To debug snapshot issues uncomment:
   // op_fetch_asset::trace_serializer();
+
+  emit_startup_order_link_args(&out_dir);
+  process_node_types(&out_dir);
+
+  // Always emit rerun-if-changed for dts files (they are included via
+  // include_str! in debug mode). Without this, cargo may use stale
+  // cached artifacts when dts files change.
+  emit_dts_rerun_if_changed();
+
+  if !cfg!(debug_assertions) && std::env::var("CARGO_FEATURE_HMR").is_err() {
+    compress_sources(&out_dir);
+  }
 
   if let Ok(c) = env::var("DENO_CANARY") {
     println!("cargo:rustc-env=DENO_CANARY={c}");
   }
   println!("cargo:rerun-if-env-changed=DENO_CANARY");
 
-  println!("cargo:rustc-env=GIT_COMMIT_HASH={}", git_commit_hash());
-  println!("cargo:rerun-if-env-changed=GIT_COMMIT_HASH");
-  println!(
-    "cargo:rustc-env=GIT_COMMIT_HASH_SHORT={}",
-    &git_commit_hash()[..7]
-  );
-
-  let ts_version = ts::version();
-  debug_assert_eq!(ts_version, "5.5.2"); // bump this assertion when it changes
-  println!("cargo:rustc-env=TS_VERSION={}", ts_version);
-  println!("cargo:rerun-if-env-changed=TS_VERSION");
-
   println!("cargo:rustc-env=TARGET={}", env::var("TARGET").unwrap());
   println!("cargo:rustc-env=PROFILE={}", env::var("PROFILE").unwrap());
 
-  let c = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
-  let o = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-
-  let compiler_snapshot_path = o.join("COMPILER_SNAPSHOT.bin");
-  ts::create_compiler_snapshot(compiler_snapshot_path, &c);
-
-  #[cfg(not(feature = "hmr"))]
-  {
-    let cli_snapshot_path = o.join("CLI_SNAPSHOT.bin");
-    create_cli_snapshot(cli_snapshot_path);
-  }
+  emit_laufey_version();
 
   #[cfg(target_os = "windows")]
   {
     let mut res = winres::WindowsResource::new();
     res.set_icon("deno.ico");
-    res.set_language(winapi::um::winnt::MAKELANGID(
-      winapi::um::winnt::LANG_ENGLISH,
-      winapi::um::winnt::SUBLANG_ENGLISH_US,
-    ));
+    // 0x0409 == MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US)
+    res.set_language(0x0409);
     res.compile().unwrap();
   }
-}
-
-fn deno_webgpu_get_declaration() -> PathBuf {
-  let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-  manifest_dir
-    .join("tsc")
-    .join("dts")
-    .join("lib.deno_webgpu.d.ts")
 }

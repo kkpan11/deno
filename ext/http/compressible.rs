@@ -1,7 +1,8 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
+
+use std::str::FromStr;
 
 use phf::phf_set;
-use std::str::FromStr;
 
 // Data obtained from https://github.com/jshttp/mime-db/blob/fa5e4ef3cc8907ec3c5ec5b85af0c63d7059a5cd/db.json
 // Important! Keep this list sorted alphabetically.
@@ -608,6 +609,7 @@ static CONTENT_TYPES: phf::Set<&'static [u8]> = phf_set! {
   b"text/uri-list",
   b"text/vcard",
   b"text/vtt",
+  b"text/x-component",
   b"text/x-gwt-rpc",
   b"text/x-jquery-tmpl",
   b"text/x-markdown",
@@ -652,5 +654,7 @@ mod tests {
     assert!(is_content_compressible("application/json"));
     assert!(is_content_compressible("text/plain;charset=UTF-8"));
     assert!(is_content_compressible("text/PlAIn; charset=utf-8"));
+    assert!(is_content_compressible("text/x-component"));
+    assert!(is_content_compressible("text/X-Component; charset=utf-8"));
   }
 }

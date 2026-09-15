@@ -1,10 +1,11 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 // deno-lint-ignore-file no-console
 
 // Requires to be run with `--allow-net` flag
 
 import { assert, assertEquals, assertMatch, assertThrows } from "@std/assert";
+import { toFileUrl } from "@std/path/to-file-url";
 
 function resolveWorker(worker: string): string {
   return import.meta.resolve(`../testdata/workers/${worker}`);
@@ -14,7 +15,7 @@ Deno.test(
   { permissions: { read: true } },
   function utimeSyncFileSuccess() {
     const w = new Worker(
-      resolveWorker("worker_types.ts"),
+      resolveWorker("test_worker.js"),
       { type: "module" },
     );
     assert(w);
@@ -300,7 +301,7 @@ Deno.test({
     worker.postMessage("boom");
     worker.postMessage("ping");
     assertEquals(await promise, {
-      messageHandlersCalled: 4,
+      messageHandlersCalled: 3,
       errorHandlersCalled: 4,
     });
     worker.terminate();
@@ -442,7 +443,31 @@ Deno.test("Worker limit children permissions", async function () {
   worker.terminate();
 });
 
+function setupReadCheckGranularWorkerTest() {
+  const tempDir = Deno.realPathSync(Deno.makeTempDirSync());
+  const initialPath = Deno.env.get("PATH")!;
+  const initialCwd = Deno.cwd();
+  Deno.chdir(tempDir);
+  const envSep = Deno.build.os === "windows" ? ";" : ":";
+  Deno.env.set("PATH", initialPath + envSep + tempDir);
+
+  // create executables that will be resolved when doing `which`
+  const ext = Deno.build.os === "windows" ? ".exe" : "";
+  Deno.copyFileSync(Deno.execPath(), tempDir + "/bar" + ext);
+
+  return {
+    tempDir,
+    runFooFilePath: tempDir + "/foo" + ext,
+    [Symbol.dispose]() {
+      Deno.removeSync(tempDir, { recursive: true });
+      Deno.env.set("PATH", initialPath);
+      Deno.chdir(initialCwd);
+    },
+  };
+}
+
 Deno.test("Worker limit children permissions granularly", async function () {
+  const ctx = setupReadCheckGranularWorkerTest();
   const workerUrl = resolveWorker("read_check_granular_worker.js");
   const worker = new Worker(
     workerUrl,
@@ -451,12 +476,17 @@ Deno.test("Worker limit children permissions granularly", async function () {
       deno: {
         permissions: {
           env: ["foo"],
-          hrtime: true,
           net: ["foo", "bar:8000"],
           ffi: [new URL("foo", workerUrl), "bar"],
-          read: [new URL("foo", workerUrl), "bar"],
-          run: [new URL("foo", workerUrl), "bar", "./baz"],
+          read: [new URL("foo", workerUrl), "bar", ctx.tempDir],
+          run: [
+            toFileUrl(ctx.runFooFilePath),
+            "bar",
+            "./baz",
+            "unresolved-exec",
+          ],
           write: [new URL("foo", workerUrl), "bar"],
+          import: ["foo", "bar:8000"],
         },
       },
     },
@@ -468,7 +498,6 @@ Deno.test("Worker limit children permissions granularly", async function () {
     envGlobal: "prompt",
     envFoo: "granted",
     envAbsent: "prompt",
-    hrtime: "granted",
     netGlobal: "prompt",
     netFoo: "granted",
     netFoo8000: "granted",
@@ -478,14 +507,22 @@ Deno.test("Worker limit children permissions granularly", async function () {
     ffiFoo: "granted",
     ffiBar: "granted",
     ffiAbsent: "prompt",
+    importGlobal: "prompt",
+    importFoo: "granted",
+    importFoo8000: "granted",
+    importBar: "prompt",
+    importBar8000: "granted",
+    importAbsent: "prompt",
     readGlobal: "prompt",
     readFoo: "granted",
     readBar: "granted",
     readAbsent: "prompt",
     runGlobal: "prompt",
     runFoo: "granted",
+    runFooPath: "granted",
     runBar: "granted",
     runBaz: "granted",
+    runUnresolved: "prompt", // unresolved binaries remain as "prompt"
     runAbsent: "prompt",
     writeGlobal: "prompt",
     writeFoo: "granted",
@@ -496,6 +533,7 @@ Deno.test("Worker limit children permissions granularly", async function () {
 });
 
 Deno.test("Nested worker limit children permissions", async function () {
+  const _cleanup = setupReadCheckGranularWorkerTest();
   /** This worker has permissions but doesn't grant them to its children */
   const worker = new Worker(
     resolveWorker("parent_read_check_worker.js"),
@@ -508,7 +546,6 @@ Deno.test("Nested worker limit children permissions", async function () {
     envGlobal: "prompt",
     envFoo: "prompt",
     envAbsent: "prompt",
-    hrtime: "prompt",
     netGlobal: "prompt",
     netFoo: "prompt",
     netFoo8000: "prompt",
@@ -518,14 +555,22 @@ Deno.test("Nested worker limit children permissions", async function () {
     ffiFoo: "prompt",
     ffiBar: "prompt",
     ffiAbsent: "prompt",
+    importGlobal: "prompt",
+    importFoo: "prompt",
+    importFoo8000: "prompt",
+    importBar: "prompt",
+    importBar8000: "prompt",
+    importAbsent: "prompt",
     readGlobal: "prompt",
     readFoo: "prompt",
     readBar: "prompt",
     readAbsent: "prompt",
     runGlobal: "prompt",
     runFoo: "prompt",
+    runFooPath: "prompt",
     runBar: "prompt",
     runBaz: "prompt",
+    runUnresolved: "prompt",
     runAbsent: "prompt",
     writeGlobal: "prompt",
     writeFoo: "prompt",
@@ -549,7 +594,7 @@ Deno.test({
         );
         worker.terminate();
       },
-      Deno.errors.PermissionDenied,
+      Deno.errors.NotCapable,
       "Can't escalate parent thread permissions",
     );
   },
@@ -586,9 +631,9 @@ Deno.test("Worker permissions are not inherited with empty permission object", a
   worker.postMessage(null);
   assertEquals(await promise, {
     env: "prompt",
-    hrtime: "prompt",
     net: "prompt",
     ffi: "prompt",
+    import: "prompt",
     read: "prompt",
     run: "prompt",
     write: "prompt",
@@ -611,9 +656,9 @@ Deno.test("Worker permissions are not inherited with single specified permission
   worker.postMessage(null);
   assertEquals(await promise, {
     env: "prompt",
-    hrtime: "prompt",
     net: "granted",
     ffi: "prompt",
+    import: "prompt",
     read: "prompt",
     run: "prompt",
     write: "prompt",
@@ -805,6 +850,67 @@ Deno.test({
     assertEquals(await deferred2.promise, true);
     assertEquals(await deferred3.promise, true);
     await result.promise;
+    worker.terminate();
+  },
+});
+
+Deno.test({
+  name: "worker main-thread receives a burst of messages (sync drain)",
+  fn: async function () {
+    // Regression test for the Web `Worker` main-side receive loop's bounded
+    // sync-drain: a worker that synchronously posts many messages in one turn
+    // must have all of them delivered to the host, in order, with no drops.
+    const worker = new Worker(
+      resolveWorker("message_burst.ts"),
+      { type: "module" },
+    );
+    const count = 500;
+    const received: number[] = [];
+    const { promise, resolve } = Promise.withResolvers<void>();
+    worker.onmessage = (e) => {
+      received.push(e.data);
+      // No transferables, so `ports` must be the cheap empty frozen array.
+      assertEquals(e.ports.length, 0);
+      if (received.length === count) resolve();
+    };
+    worker.postMessage(count);
+    await promise;
+    assertEquals(received.length, count);
+    for (let i = 0; i < count; i++) {
+      assertEquals(received[i], i);
+    }
+    worker.terminate();
+  },
+});
+
+Deno.test({
+  name: "worker onmessage re-armed between two queued messages (sync drain)",
+  fn: async function () {
+    // Regression test (mirrors WPT workers/Worker-structure-message.html): the
+    // worker replies with two messages in one turn and the host re-arms
+    // `onmessage` between them via a `.then`. The main-side sync drain must run
+    // a microtask checkpoint between the two queued messages so the second one
+    // reaches the re-armed handler instead of being delivered to the stale one.
+    const worker = new Worker(
+      resolveWorker("structure_message.ts"),
+      { type: "module" },
+    );
+    const first = await new Promise<MessageEvent>((resolve) => {
+      worker.onmessage = resolve;
+      worker.postMessage({
+        operation: "find-edges",
+        input: new ArrayBuffer(20),
+        threshold: 0.6,
+      });
+    });
+    assertEquals(first.data, "PASS");
+    const second = await new Promise<MessageEvent>((resolve) => {
+      worker.onmessage = resolve;
+    });
+    assertEquals(second.data.operation, "find-edges");
+    assert(second.data.input instanceof ArrayBuffer);
+    assertEquals(second.data.input.byteLength, 20);
+    assertEquals(second.data.threshold, 0.6);
     worker.terminate();
   },
 });

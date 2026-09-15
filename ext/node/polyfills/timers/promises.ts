@@ -1,20 +1,18 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
-import { promisify } from "node:util";
-import timers from "node:timers";
+// Copyright 2018-2026 the Deno authors. MIT license.
 
-export const setTimeout = promisify(timers.setTimeout),
-  setImmediate = promisify(timers.setImmediate),
-  setInterval = promisify(timers.setInterval);
+(function () {
+const { core } = __bootstrap;
+const timers = core.loadExtScript("ext:deno_node/timers.ts");
 
-export const scheduler = {
-  async wait(delay: number, options?: { signal?: AbortSignal }): Promise<void> {
-    return await setTimeout(delay, undefined, options);
-  },
-  yield: setImmediate,
-};
+const setTimeout = timers.promises.setTimeout;
+const setImmediate = timers.promises.setImmediate;
+const setInterval = timers.promises.setInterval;
+const scheduler = timers.promises.scheduler;
 
-export default {
+return {
   setTimeout,
   setImmediate,
   setInterval,
+  scheduler,
 };
+})();

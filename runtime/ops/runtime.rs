@@ -1,14 +1,12 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
-use deno_core::error::AnyError;
-use deno_core::op2;
 use deno_core::ModuleSpecifier;
 use deno_core::OpState;
-use deno_permissions::PermissionsContainer;
+use deno_core::op2;
 
 deno_core::extension!(
   deno_runtime,
-  ops = [op_main_module, op_ppid],
+  ops = [op_main_module, op_ppid, op_internal_log],
   options = { main_module: ModuleSpecifier },
   state = |state, options| {
     state.put::<ModuleSpecifier>(options.main_module);
@@ -17,16 +15,9 @@ deno_core::extension!(
 
 #[op2]
 #[string]
-fn op_main_module(state: &mut OpState) -> Result<String, AnyError> {
+fn op_main_module(state: &mut OpState) -> String {
   let main_url = state.borrow::<ModuleSpecifier>();
-  let main_path = main_url.to_string();
-  if main_url.scheme() == "file" {
-    let main_path = main_url.to_file_path().unwrap();
-    state
-      .borrow_mut::<PermissionsContainer>()
-      .check_read_blind(&main_path, "main_module", "Deno.mainModule")?;
-  }
-  Ok(main_path)
+  main_url.to_string()
 }
 
 /// This is an op instead of being done at initialization time because
@@ -43,16 +34,16 @@ pub fn op_ppid() -> i64 {
     // - Apache License, Version 2.0
     // - MIT license
     use std::mem;
-    use winapi::shared::minwindef::DWORD;
-    use winapi::um::handleapi::CloseHandle;
-    use winapi::um::handleapi::INVALID_HANDLE_VALUE;
-    use winapi::um::processthreadsapi::GetCurrentProcessId;
-    use winapi::um::tlhelp32::CreateToolhelp32Snapshot;
-    use winapi::um::tlhelp32::Process32First;
-    use winapi::um::tlhelp32::Process32Next;
-    use winapi::um::tlhelp32::PROCESSENTRY32;
-    use winapi::um::tlhelp32::TH32CS_SNAPPROCESS;
-    // SAFETY: winapi calls
+
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::CreateToolhelp32Snapshot;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::PROCESSENTRY32;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::Process32First;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::Process32Next;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::TH32CS_SNAPPROCESS;
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    // SAFETY: Win32 calls
     unsafe {
       // Take a snapshot of system processes, one of which is ours
       // and contains our parent's pid
@@ -62,7 +53,7 @@ pub fn op_ppid() -> i64 {
       }
 
       let mut entry: PROCESSENTRY32 = mem::zeroed();
-      entry.dwSize = mem::size_of::<PROCESSENTRY32>() as DWORD;
+      entry.dwSize = mem::size_of::<PROCESSENTRY32>() as u32;
 
       // Iterate over system processes looking for ours
       let success = Process32First(snapshot, &mut entry);
@@ -92,5 +83,35 @@ pub fn op_ppid() -> i64 {
   {
     use std::os::unix::process::parent_id;
     parent_id().into()
+  }
+}
+
+#[allow(clippy::match_single_binding, reason = "needed for temporary lifetime")]
+#[op2(fast)]
+fn op_internal_log(
+  #[string] url: &str,
+  #[smi] level: u32,
+  #[string] message: &str,
+) {
+  let level = match level {
+    1 => log::Level::Error,
+    2 => log::Level::Warn,
+    3 => log::Level::Info,
+    4 => log::Level::Debug,
+    5 => log::Level::Trace,
+    _ => unreachable!(),
+  };
+  let target = url.replace('/', "::");
+  match format_args!("{message}") {
+    args => {
+      let record = log::Record::builder()
+        .file(Some(url))
+        .module_path(Some(url))
+        .target(&target)
+        .level(level)
+        .args(args)
+        .build();
+      log::logger().log(&record);
+    }
   }
 }

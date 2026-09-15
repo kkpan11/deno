@@ -1,29 +1,34 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
-
-use deno_core::anyhow::Error;
-use deno_core::error::range_error;
-use deno_core::op2;
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 use std::borrow::Cow;
+
+use deno_core::op2;
 
 // map_domain, to_ascii and to_unicode are based on the punycode implementation in node.js
 // https://github.com/nodejs/node/blob/73025c4dec042e344eeea7912ed39f7b7c4a3991/lib/punycode.js
 
 const PUNY_PREFIX: &str = "xn--";
 
-fn invalid_input_err() -> Error {
-  range_error("Invalid input")
+#[derive(Debug, thiserror::Error, deno_error::JsError)]
+pub enum IdnaError {
+  #[class(range)]
+  #[error("Invalid input")]
+  InvalidInput,
+  #[class(generic)]
+  #[error("Input would take more than 63 characters to encode")]
+  InputTooLong,
+  #[class(range)]
+  #[error("Illegal input >= 0x80 (not a basic code point)")]
+  IllegalInput,
 }
 
-fn not_basic_err() -> Error {
-  range_error("Illegal input >= 0x80 (not a basic code point)")
-}
+deno_error::js_error_wrapper!(idna::Errors, JsIdnaErrors, "Error");
 
 /// map a domain by mapping each label with the given function
-fn map_domain<E>(
+fn map_domain(
   domain: &str,
-  f: impl Fn(&str) -> Result<Cow<'_, str>, E>,
-) -> Result<String, E> {
+  f: impl Fn(&str) -> Result<Cow<'_, str>, IdnaError>,
+) -> Result<String, IdnaError> {
   let mut result = String::with_capacity(domain.len());
   let mut domain = domain;
 
@@ -48,7 +53,7 @@ fn map_domain<E>(
 /// Maps a unicode domain to ascii by punycode encoding each label
 ///
 /// Note this is not IDNA2003 or IDNA2008 compliant, rather it matches node.js's punycode implementation
-fn to_ascii(input: &str) -> Result<String, Error> {
+fn to_ascii(input: &str) -> Result<String, IdnaError> {
   if input.is_ascii() {
     return Ok(input.into());
   }
@@ -61,9 +66,7 @@ fn to_ascii(input: &str) -> Result<String, Error> {
     } else {
       idna::punycode::encode_str(label)
         .map(|encoded| [PUNY_PREFIX, &encoded].join("").into()) // add the prefix
-        .ok_or_else(|| {
-          Error::msg("Input would take more than 63 characters to encode") // only error possible per the docs
-        })
+        .ok_or(IdnaError::InputTooLong) // only error possible per the docs
     }
   })?;
 
@@ -74,13 +77,13 @@ fn to_ascii(input: &str) -> Result<String, Error> {
 /// Maps an ascii domain to unicode by punycode decoding each label
 ///
 /// Note this is not IDNA2003 or IDNA2008 compliant, rather it matches node.js's punycode implementation
-fn to_unicode(input: &str) -> Result<String, Error> {
+fn to_unicode(input: &str) -> Result<String, IdnaError> {
   map_domain(input, |s| {
     if let Some(puny) = s.strip_prefix(PUNY_PREFIX) {
       // it's a punycode encoded label
       Ok(
         idna::punycode::decode_to_string(&puny.to_lowercase())
-          .ok_or_else(invalid_input_err)?
+          .ok_or(IdnaError::InvalidInput)?
           .into(),
       )
     } else {
@@ -95,7 +98,7 @@ fn to_unicode(input: &str) -> Result<String, Error> {
 #[string]
 pub fn op_node_idna_punycode_to_ascii(
   #[string] domain: String,
-) -> Result<String, Error> {
+) -> Result<String, IdnaError> {
   to_ascii(&domain)
 }
 
@@ -105,18 +108,62 @@ pub fn op_node_idna_punycode_to_ascii(
 #[string]
 pub fn op_node_idna_punycode_to_unicode(
   #[string] domain: String,
-) -> Result<String, Error> {
+) -> Result<String, IdnaError> {
   to_unicode(&domain)
 }
 
-/// Converts a domain to ASCII as per the IDNA spec
-/// (specifically UTS #46)
+/// Converts a domain to ASCII as per the IDNA spec (specifically UTS #46).
+///
+/// Backs Node's `internal/idna` `toASCII`, which is what `node:dns` and
+/// `node:tls` use. This is *not* the same as `url.domainToASCII` below: it runs
+/// ToASCII and nothing else, so hostnames are passed to the resolver the way
+/// the caller wrote them.
+///
+/// Returns an empty string if the domain is invalid, matching Node.js behavior
 #[op2]
 #[string]
-pub fn op_node_idna_domain_to_ascii(
-  #[string] domain: String,
-) -> Result<String, Error> {
-  idna::domain_to_ascii(&domain).map_err(|e| e.into())
+pub fn op_node_idna_to_ascii(#[string] domain: String) -> String {
+  idna::domain_to_ascii(&domain).unwrap_or_default()
+}
+
+/// Converts a domain to ASCII the way the WHATWG URL host parser does.
+///
+/// Backs Node's `url.domainToASCII`, which is a different (stricter, and
+/// normalizing) operation than `toASCII` above.
+///
+/// Returns an empty string if the domain is invalid, matching Node.js behavior
+#[op2]
+#[string]
+pub fn op_node_idna_domain_to_ascii(#[string] domain: String) -> String {
+  // Node's `url.domainToASCII` is backed by ada and runs the full WHATWG URL
+  // host parser, not just UTS #46 ToASCII. That means, before applying ToASCII,
+  // it: strips ASCII tab/newline code points, terminates the host at the first
+  // `/`, `\`, `?` or `#`, percent-decodes the remainder, parses IPv4/IPv6
+  // literals (normalizing them, e.g. `0xff.0.0.1` -> `255.0.0.1` and
+  // `[0:0:0:0:0:0:0:1]` -> `[::1]`), and rejects forbidden host code points
+  // (control chars, space, `:%<>[]|` ...) by returning an empty string.
+  //
+  // Reproduce that here by driving the same WHATWG host parser that the `url`
+  // crate implements, so results agree with Node (see
+  // https://github.com/denoland/deno/issues/36514).
+
+  // Strip ASCII tab and newlines, which the URL parser removes up front.
+  let stripped: Cow<str> = if domain.contains(['\t', '\n', '\r']) {
+    Cow::Owned(domain.replace(['\t', '\n', '\r'], ""))
+  } else {
+    Cow::Borrowed(domain.as_str())
+  };
+
+  // The host ends at the first host terminator for special schemes.
+  let host = match stripped.find(['/', '\\', '?', '#']) {
+    Some(i) => &stripped[..i],
+    None => &stripped,
+  };
+
+  match url::Host::parse(host) {
+    Ok(host) => host.to_string(),
+    Err(_) => String::new(),
+  }
 }
 
 /// Converts a domain to Unicode as per the IDNA spec
@@ -131,7 +178,7 @@ pub fn op_node_idna_domain_to_unicode(#[string] domain: String) -> String {
 #[string]
 pub fn op_node_idna_punycode_decode(
   #[string] domain: String,
-) -> Result<String, Error> {
+) -> Result<String, IdnaError> {
   if domain.is_empty() {
     return Ok(domain);
   }
@@ -147,11 +194,10 @@ pub fn op_node_idna_punycode_decode(
       .unwrap_or(domain.len() - 1);
 
   if !domain[..last_dash].is_ascii() {
-    return Err(not_basic_err());
+    return Err(IdnaError::IllegalInput);
   }
 
-  idna::punycode::decode_to_string(&domain)
-    .ok_or_else(|| deno_core::error::range_error("Invalid input"))
+  idna::punycode::decode_to_string(&domain).ok_or(IdnaError::InvalidInput)
 }
 
 #[op2]

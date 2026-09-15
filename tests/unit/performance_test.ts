@@ -1,13 +1,14 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 import {
   assert,
   assertEquals,
+  assertNotEquals,
   assertNotStrictEquals,
   assertStringIncludes,
   assertThrows,
 } from "./test_util.ts";
 
-Deno.test({ permissions: { hrtime: false } }, async function performanceNow() {
+Deno.test({ permissions: {} }, async function performanceNow() {
   const { promise, resolve } = Promise.withResolvers<void>();
   const start = performance.now();
   let totalTime = 0;
@@ -34,6 +35,64 @@ Deno.test(function performanceToJSON() {
   assert(json.timeOrigin === performance.timeOrigin);
   // check there are no other keys
   assertEquals(Object.keys(json).length, 1);
+});
+
+Deno.test(function clearMarks() {
+  performance.mark("a");
+  performance.mark("a");
+  performance.mark("b");
+  performance.mark("c");
+
+  const marksNum = performance.getEntriesByType("mark").length;
+
+  performance.clearMarks("a");
+  assertEquals(performance.getEntriesByType("mark").length, marksNum - 2);
+
+  performance.clearMarks();
+  assertEquals(performance.getEntriesByType("mark").length, 0);
+});
+
+Deno.test(function clearMeasures() {
+  performance.measure("from-start");
+  performance.mark("a");
+  performance.measure("from-mark-a", "a");
+  performance.measure("from-start");
+  performance.measure("from-mark-a", "a");
+  performance.mark("b");
+  performance.measure("between-a-and-b", "a", "b");
+
+  const measuresNum = performance.getEntriesByType("measure").length;
+
+  performance.clearMeasures("from-start");
+  assertEquals(performance.getEntriesByType("measure").length, measuresNum - 2);
+
+  performance.clearMeasures();
+  assertEquals(performance.getEntriesByType("measure").length, 0);
+
+  performance.clearMarks();
+});
+
+Deno.test(function clearResourceTimings() {
+  // clearResourceTimings should exist and not throw
+  // Since Deno doesn't currently track resource timings, this is effectively a no-op
+  performance.clearResourceTimings();
+  // After clearing, there should be no resource entries
+  assertEquals(performance.getEntriesByType("resource").length, 0);
+});
+
+Deno.test(function setResourceTimingBufferSize() {
+  // setResourceTimingBufferSize should exist and not throw
+  // Since Deno doesn't currently track resource timings, this is effectively a no-op
+  performance.setResourceTimingBufferSize(100);
+  performance.setResourceTimingBufferSize(0);
+  // Verify it requires an argument
+  assertThrows(
+    () => {
+      // @ts-expect-error: testing missing argument
+      performance.setResourceTimingBufferSize();
+    },
+    TypeError,
+  );
 });
 
 Deno.test(function performanceMark() {
@@ -82,7 +141,7 @@ Deno.test(function performanceMeasure() {
   const mark1 = performance.mark(markName1);
   // Measure against the inaccurate-but-known-good wall clock
   const now = new Date().valueOf();
-  return new Promise((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     setTimeout(() => {
       try {
         const later = new Date().valueOf();
@@ -119,6 +178,25 @@ Deno.test(function performanceMeasure() {
         assert(entriesByName[entriesByName.length - 1] === measure1);
         const measureEntries = performance.getEntriesByType("measure");
         assert(measureEntries[measureEntries.length - 1] === measure2);
+      } catch (e) {
+        return reject(e);
+      }
+      resolve();
+    }, 100);
+  });
+});
+
+Deno.test(function performanceMeasureUseMostRecentMark() {
+  const markName1 = "mark1";
+  const measureName1 = "measure1";
+  const mark1 = performance.mark(markName1);
+  return new Promise<void>((resolve, reject) => {
+    setTimeout(() => {
+      try {
+        const laterMark1 = performance.mark(markName1);
+        const measure1 = performance.measure(measureName1, markName1);
+        assertNotEquals(mark1.startTime, measure1.startTime);
+        assertEquals(laterMark1.startTime, measure1.startTime);
       } catch (e) {
         return reject(e);
       }
@@ -174,7 +252,7 @@ Deno.test(function performanceMeasureIllegalConstructor() {
 Deno.test(function performanceIsEventTarget() {
   assert(performance instanceof EventTarget);
 
-  return new Promise((resolve) => {
+  return new Promise<void>((resolve) => {
     const handler = () => {
       resolve();
     };

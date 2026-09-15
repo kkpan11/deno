@@ -1,5 +1,5 @@
 // deno-lint-ignore-file no-undef
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 import os from "node:os";
 import {
@@ -8,6 +8,7 @@ import {
   assertNotEquals,
   assertThrows,
 } from "@std/assert";
+import console from "node:console";
 
 Deno.test({
   name: "build architecture is a string",
@@ -98,14 +99,14 @@ Deno.test({
         os.getPriority(3.15);
       },
       Error,
-      "pid must be 'an integer'",
+      'The value of "pid" is out of range. It must be an integer',
     );
     assertThrows(
       () => {
         os.getPriority(9999999999);
       },
       Error,
-      "must be >= -2147483648 && <= 2147483647",
+      'The value of "pid" is out of range. It must be >= -2147483648 && <= 2147483647',
     );
   },
 });
@@ -118,14 +119,14 @@ Deno.test({
         os.setPriority(3.15, 0);
       },
       Error,
-      "pid must be 'an integer'",
+      `The value of "pid" is out of range. It must be an integer`,
     );
     assertThrows(
       () => {
         os.setPriority(9999999999, 0);
       },
       Error,
-      "pid must be >= -2147483648 && <= 2147483647",
+      'The value of "pid" is out of range. It must be >= -2147483648 && <= 2147483647',
     );
   },
 });
@@ -138,28 +139,28 @@ Deno.test({
         os.setPriority(0, 3.15);
       },
       Error,
-      "priority must be 'an integer'",
+      'The value of "priority" is out of range. It must be an integer',
     );
     assertThrows(
       () => {
         os.setPriority(0, -21);
       },
       Error,
-      "priority must be >= -20 && <= 19",
+      'The value of "priority" is out of range. It must be >= -20 && <= 19',
     );
     assertThrows(
       () => {
         os.setPriority(0, 20);
       },
       Error,
-      "priority must be >= -20 && <= 19",
+      'The value of "priority" is out of range. It must be >= -20 && <= 19',
     );
     assertThrows(
       () => {
         os.setPriority(0, 9999999999);
       },
       Error,
-      "priority must be >= -20 && <= 19",
+      'The value of "priority" is out of range. It must be >= -20 && <= 19',
     );
   },
 });
@@ -173,28 +174,28 @@ Deno.test({
         os.setPriority(3.15);
       },
       Error,
-      "priority must be 'an integer'",
+      'The value of "priority" is out of range. It must be an integer',
     );
     assertThrows(
       () => {
         os.setPriority(-21);
       },
       Error,
-      "priority must be >= -20 && <= 19",
+      'The value of "priority" is out of range. It must be >= -20 && <= 19',
     );
     assertThrows(
       () => {
         os.setPriority(20);
       },
       Error,
-      "priority must be >= -20 && <= 19",
+      'The value of "priority" is out of range. It must be >= -20 && <= 19',
     );
     assertThrows(
       () => {
         os.setPriority(9999999999);
       },
       Error,
-      "priority must be >= -20 && <= 19",
+      'The value of "priority" is out of range. It must be >= -20 && <= 19',
     );
   },
 });
@@ -293,15 +294,50 @@ Deno.test({
 Deno.test({
   name:
     "os.setPriority() throw os permission denied error & os.getPriority() doesn't",
+  // Windows allows setting process priority without privilege escalation up to `PRIORITY_HIGH`.
+  // Setting to `PRIORITY_HIGHEST` will be silently reduced to `PRIORITY_HIGH`.
+  ignore: Deno.build.os === "windows",
   async fn() {
     const child = new Deno.Command(Deno.execPath(), {
       args: ["eval", "while (true) { console.log('foo') }"],
     }).spawn();
     assertThrows(
-      () => os.setPriority(child.pid, os.constants.priority.PRIORITY_HIGH),
-      Deno.errors.PermissionDenied,
+      () => {
+        try {
+          os.setPriority(child.pid, os.constants.priority.PRIORITY_HIGH);
+        } catch (err) {
+          console.error(err);
+          throw err;
+        }
+      },
+      Error,
+      "uv_os_setpriority returned EACCES (permission denied)",
     );
     os.getPriority(child.pid);
+    child.kill();
+    await child.status;
+  },
+});
+
+Deno.test({
+  name: "os.setPriority() works on Windows",
+  ignore: Deno.build.os !== "windows",
+  async fn() {
+    const child = new Deno.Command(Deno.execPath(), {
+      args: ["eval", "while (true) { console.log('foo') }"],
+    }).spawn();
+
+    const originalPriority = os.getPriority(child.pid);
+    assertNotEquals(originalPriority, os.constants.priority.PRIORITY_HIGH);
+    os.setPriority(child.pid, os.constants.priority.PRIORITY_HIGH);
+
+    assertEquals(
+      os.getPriority(child.pid),
+      os.constants.priority.PRIORITY_HIGH,
+    );
+
+    os.setPriority(child.pid, originalPriority);
+    assertEquals(os.getPriority(child.pid), originalPriority);
     child.kill();
     await child.status;
   },

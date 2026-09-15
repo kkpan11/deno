@@ -1,36 +1,45 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
-import { core, internals, primordials } from "ext:core/mod.js";
+(function () {
+const { core, primordials } = __bootstrap;
 const {
   BadResourcePrototype,
   InterruptedPrototype,
   internalRidSymbol,
+  internalFdSymbol,
   createCancelHandle,
 } = core;
-import {
+const {
   op_dns_resolve,
   op_net_accept_tcp,
+  op_net_accept_tunnel,
   op_net_accept_unix,
+  op_net_accept_vsock,
   op_net_connect_tcp,
   op_net_connect_unix,
+  op_net_connect_vsock,
   op_net_join_multi_v4_udp,
   op_net_join_multi_v6_udp,
   op_net_leave_multi_v4_udp,
   op_net_leave_multi_v6_udp,
   op_net_listen_tcp,
+  op_net_listen_tunnel,
   op_net_listen_unix,
+  op_net_listen_vsock,
   op_net_recv_udp,
   op_net_recv_unixpacket,
   op_net_send_udp,
   op_net_send_unixpacket,
+  op_net_set_broadcast_udp,
   op_net_set_multi_loopback_udp,
   op_net_set_multi_ttl_udp,
   op_set_keepalive,
   op_set_nodelay,
-} from "ext:core/ops";
+} = core.ops;
 const UDP_DGRAM_MAXSIZE = 65507;
 
 const {
+  ArrayPrototypeMap,
   Error,
   Number,
   NumberIsNaN,
@@ -44,52 +53,61 @@ const {
   SetPrototypeDelete,
   SetPrototypeForEach,
   SymbolAsyncIterator,
+  SymbolDispose,
   Symbol,
   TypeError,
   TypedArrayPrototypeSubarray,
   Uint8Array,
 } = primordials;
 
-import {
-  readableStreamForRidUnrefable,
-  readableStreamForRidUnrefableRef,
-  readableStreamForRidUnrefableUnref,
-  writableStreamForRid,
-} from "ext:deno_web/06_streams.js";
-import * as abortSignal from "ext:deno_web/03_abort_signal.js";
-import { SymbolDispose } from "ext:deno_web/00_infra.js";
+// All four helpers below are only used inside Conn class methods. Defer
+// loading the 208 KB `06_streams.js` polyfill until first stream access.
+let _streamsImpl;
+function lazyStreams() {
+  return _streamsImpl ??
+    (_streamsImpl = core.loadExtScript("ext:deno_web/06_streams.js"));
+}
+const abortSignal = core.loadExtScript("ext:deno_web/03_abort_signal.js");
 
 async function write(rid, data) {
   return await core.write(rid, data);
 }
 
-function shutdown(rid) {
-  return core.shutdown(rid);
-}
-
 async function resolveDns(query, recordType, options) {
+  const signal = options?.signal;
+  if (signal) {
+    signal.throwIfAborted();
+  }
   let cancelRid;
   let abortHandler;
-  if (options?.signal) {
-    options.signal.throwIfAborted();
-    cancelRid = createCancelHandle();
-    abortHandler = () => core.tryClose(cancelRid);
-    options.signal[abortSignal.add](abortHandler);
-  }
 
   try {
-    return await op_dns_resolve({
+    if (signal) {
+      cancelRid = createCancelHandle();
+      abortHandler = () => core.tryClose(cancelRid);
+      signal[abortSignal.add](abortHandler);
+    }
+
+    const res = await op_dns_resolve({
       cancelRid,
       query,
       recordType,
       options,
-    });
+    }, /* useEdns0 */ true);
+    return ArrayPrototypeMap(res, (recordWithTtl) => recordWithTtl.data);
   } finally {
-    if (options?.signal) {
-      options.signal[abortSignal.remove](abortHandler);
+    if (cancelRid !== undefined) {
+      // The op consumes this on its normal path. Close it here as well in case
+      // the op returned before taking ownership.
+      core.tryClose(cancelRid);
+    }
+    if (abortHandler !== undefined) {
+      signal[abortSignal.remove](abortHandler);
+    }
 
+    if (signal) {
       // always throw the abort error when aborted
-      options.signal.throwIfAborted();
+      signal.throwIfAborted();
     }
   }
 }
@@ -103,30 +121,20 @@ class Conn {
 
   #readable;
   #writable;
-
-  constructor(rid, remoteAddr, localAddr) {
-    if (internals.future) {
-      ObjectDefineProperty(this, "rid", {
-        enumerable: false,
-        value: undefined,
-      });
-    }
+  constructor(rid, remoteAddr, localAddr, fd) {
     ObjectDefineProperty(this, internalRidSymbol, {
+      __proto__: null,
       enumerable: false,
       value: rid,
+    });
+    ObjectDefineProperty(this, internalFdSymbol, {
+      __proto__: null,
+      enumerable: false,
+      value: fd,
     });
     this.#rid = rid;
     this.#remoteAddr = remoteAddr;
     this.#localAddr = localAddr;
-  }
-
-  get rid() {
-    internals.warnOnDeprecatedApi(
-      "Deno.Conn.rid",
-      new Error().stack,
-      "Use `Deno.Conn` instance methods instead.",
-    );
-    return this.#rid;
   }
 
   get remoteAddr() {
@@ -164,14 +172,14 @@ class Conn {
   }
 
   closeWrite() {
-    return shutdown(this.#rid);
+    return core.shutdown(this.#rid);
   }
 
   get readable() {
     if (this.#readable === undefined) {
-      this.#readable = readableStreamForRidUnrefable(this.#rid);
+      this.#readable = lazyStreams().readableStreamForRidUnrefable(this.#rid);
       if (this.#unref) {
-        readableStreamForRidUnrefableUnref(this.#readable);
+        lazyStreams().readableStreamForRidUnrefableUnref(this.#readable);
       }
     }
     return this.#readable;
@@ -179,7 +187,7 @@ class Conn {
 
   get writable() {
     if (this.#writable === undefined) {
-      this.#writable = writableStreamForRid(this.#rid);
+      this.#writable = lazyStreams().writableStreamForRid(this.#rid);
     }
     return this.#writable;
   }
@@ -187,7 +195,7 @@ class Conn {
   ref() {
     this.#unref = false;
     if (this.#readable) {
-      readableStreamForRidUnrefableRef(this.#readable);
+      lazyStreams().readableStreamForRidUnrefableRef(this.#readable);
     }
 
     SetPrototypeForEach(
@@ -199,7 +207,7 @@ class Conn {
   unref() {
     this.#unref = true;
     if (this.#readable) {
-      readableStreamForRidUnrefableUnref(this.#readable);
+      lazyStreams().readableStreamForRidUnrefableUnref(this.#readable);
     }
     SetPrototypeForEach(
       this.#pendingReadPromises,
@@ -215,22 +223,14 @@ class Conn {
 class TcpConn extends Conn {
   #rid = 0;
 
-  constructor(rid, remoteAddr, localAddr) {
-    super(rid, remoteAddr, localAddr);
+  constructor(rid, remoteAddr, localAddr, fd) {
+    super(rid, remoteAddr, localAddr, fd);
     ObjectDefineProperty(this, internalRidSymbol, {
+      __proto__: null,
       enumerable: false,
       value: rid,
     });
     this.#rid = rid;
-  }
-
-  get rid() {
-    internals.warnOnDeprecatedApi(
-      "Deno.TcpConn.rid",
-      new Error().stack,
-      "Use `Deno.TcpConn` instance methods instead.",
-    );
-    return this.#rid;
   }
 
   setNoDelay(noDelay = true) {
@@ -243,24 +243,35 @@ class TcpConn extends Conn {
 }
 
 class UnixConn extends Conn {
-  #rid = 0;
-
   constructor(rid, remoteAddr, localAddr) {
     super(rid, remoteAddr, localAddr);
     ObjectDefineProperty(this, internalRidSymbol, {
+      __proto__: null,
       enumerable: false,
       value: rid,
     });
-    this.#rid = rid;
   }
+}
 
-  get rid() {
-    internals.warnOnDeprecatedApi(
-      "Deno.UnixConn.rid",
-      new Error().stack,
-      "Use `Deno.UnixConn` instance methods instead.",
-    );
-    return this.#rid;
+class VsockConn extends Conn {
+  constructor(rid, remoteAddr, localAddr) {
+    super(rid, remoteAddr, localAddr);
+    ObjectDefineProperty(this, internalRidSymbol, {
+      __proto__: null,
+      enumerable: false,
+      value: rid,
+    });
+  }
+}
+
+class TunnelConn extends Conn {
+  constructor(rid, remoteAddr, localAddr) {
+    super(rid, remoteAddr, localAddr);
+    ObjectDefineProperty(this, internalRidSymbol, {
+      __proto__: null,
+      enumerable: false,
+      value: rid,
+    });
   }
 }
 
@@ -269,29 +280,17 @@ class Listener {
   #addr = null;
   #unref = false;
   #promise = null;
+  #type = null;
 
-  constructor(rid, addr) {
-    if (internals.future) {
-      ObjectDefineProperty(this, "rid", {
-        enumerable: false,
-        value: undefined,
-      });
-    }
+  constructor(rid, addr, type) {
     ObjectDefineProperty(this, internalRidSymbol, {
+      __proto__: null,
       enumerable: false,
       value: rid,
     });
     this.#rid = rid;
     this.#addr = addr;
-  }
-
-  get rid() {
-    internals.warnOnDeprecatedApi(
-      "Deno.Listener.rid",
-      new Error().stack,
-      "Use `Deno.Listener` instance methods instead.",
-    );
-    return this.#rid;
+    this.#type = type;
   }
 
   get addr() {
@@ -300,32 +299,47 @@ class Listener {
 
   async accept() {
     let promise;
-    switch (this.addr.transport) {
+    switch (this.#type) {
       case "tcp":
         promise = op_net_accept_tcp(this.#rid);
         break;
       case "unix":
         promise = op_net_accept_unix(this.#rid);
         break;
+      case "vsock":
+        promise = op_net_accept_vsock(this.#rid);
+        break;
+      case "tunnel":
+        promise = op_net_accept_tunnel(this.#rid);
+        break;
       default:
         throw new Error(`Unsupported transport: ${this.addr.transport}`);
     }
     this.#promise = promise;
     if (this.#unref) core.unrefOpPromise(promise);
-    const { 0: rid, 1: localAddr, 2: remoteAddr } = await promise;
+    const { 0: rid, 1: localAddr, 2: remoteAddr, 3: fd } = await promise;
     this.#promise = null;
-    if (this.addr.transport == "tcp") {
-      localAddr.transport = "tcp";
-      remoteAddr.transport = "tcp";
-      return new TcpConn(rid, remoteAddr, localAddr);
-    } else if (this.addr.transport == "unix") {
-      return new UnixConn(
-        rid,
-        { transport: "unix", path: remoteAddr },
-        { transport: "unix", path: localAddr },
-      );
-    } else {
-      throw new Error("unreachable");
+    switch (this.#type) {
+      case "tcp":
+        localAddr.transport = "tcp";
+        remoteAddr.transport = "tcp";
+        return new TcpConn(rid, remoteAddr, localAddr, fd);
+      case "unix":
+        return new UnixConn(
+          rid,
+          { transport: "unix", path: remoteAddr },
+          { transport: "unix", path: localAddr },
+        );
+      case "vsock":
+        return new VsockConn(
+          rid,
+          { transport: "vsock", cid: remoteAddr[0], port: remoteAddr[1] },
+          { transport: "vsock", cid: localAddr[0], port: localAddr[1] },
+        );
+      case "tunnel":
+        return new TunnelConn(rid, remoteAddr, localAddr);
+      default:
+        throw new Error("unreachable");
     }
   }
 
@@ -377,6 +391,27 @@ class Listener {
   }
 }
 
+const _dropMembership = Symbol("dropMembership");
+const _setBroadcast = Symbol("setBroadcast");
+const _setMultiLoopback = Symbol("setMultiLoopback");
+const _setMulticastTTL = Symbol("setMulticastTTL");
+
+function setDatagramBroadcast(conn, broadcast) {
+  return conn[_setBroadcast](broadcast);
+}
+
+function setMulticastLoopback(conn, v6, loopback) {
+  return conn[_setMultiLoopback](v6, loopback);
+}
+
+function dropMembership(conn, v6, addr, multiInterface) {
+  return conn[_dropMembership](v6, addr, multiInterface);
+}
+
+function setMulticastTTL(conn, ttl) {
+  return conn[_setMulticastTTL](ttl);
+}
+
 class DatagramConn {
   #rid = 0;
   #addr = null;
@@ -391,6 +426,26 @@ class DatagramConn {
 
   get addr() {
     return this.#addr;
+  }
+
+  [_setBroadcast](broadcast) {
+    op_net_set_broadcast_udp(this.#rid, broadcast);
+  }
+
+  [_dropMembership](v6, addr, multiInterface) {
+    if (v6) {
+      return op_net_leave_multi_v6_udp(this.#rid, addr, multiInterface);
+    }
+
+    return op_net_leave_multi_v4_udp(this.#rid, addr, multiInterface);
+  }
+
+  [_setMulticastTTL](ttl) {
+    return op_net_set_multi_ttl_udp(this.#rid, ttl);
+  }
+
+  [_setMultiLoopback](v6, loopback) {
+    return op_net_set_multi_loopback_udp(this.#rid, !v6, loopback);
   }
 
   async joinMulticastV4(addr, multiInterface) {
@@ -534,7 +589,7 @@ const listenOptionApiName = Symbol("listenOptionApiName");
 function listen(args) {
   switch (args.transport ?? "tcp") {
     case "tcp": {
-      const port = validatePort(args.port);
+      const port = validatePort(args.port, true);
       const { 0: rid, 1: addr } = op_net_listen_tcp(
         {
           hostname: args.hostname ?? "0.0.0.0",
@@ -542,9 +597,10 @@ function listen(args) {
         },
         args.reusePort,
         args.loadBalanced ?? false,
+        args.tcpBacklog ?? 511,
       );
       addr.transport = "tcp";
-      return new Listener(rid, addr);
+      return new Listener(rid, addr, "tcp");
     }
     case "unix": {
       const { 0: rid, 1: path } = op_net_listen_unix(
@@ -555,14 +611,36 @@ function listen(args) {
         transport: "unix",
         path,
       };
-      return new Listener(rid, addr);
+      return new Listener(rid, addr, "unix");
+    }
+    case "vsock": {
+      const { 0: rid, 1: cid, 2: port } = op_net_listen_vsock(
+        args.cid,
+        args.port,
+      );
+      const addr = {
+        transport: "vsock",
+        cid,
+        port,
+      };
+      return new Listener(rid, addr, "vsock");
+    }
+    case "tunnel": {
+      const { 0: rid, 1: addr } = op_net_listen_tunnel();
+      return new Listener(rid, addr, "tunnel");
     }
     default:
       throw new TypeError(`Unsupported transport: '${transport}'`);
   }
 }
 
-function validatePort(maybePort) {
+function validatePort(maybePort, isServer = false) {
+  // A missing port means "any available port" (port 0) for servers. Clients
+  // must always specify a port to connect to, so a missing port is left as-is
+  // and rejected below.
+  if (isServer && (maybePort === null || maybePort === undefined)) {
+    maybePort = 0;
+  }
   if (typeof maybePort !== "number" && typeof maybePort !== "string") {
     throw new TypeError(`Invalid port (expected number): ${maybePort}`);
   }
@@ -574,7 +652,8 @@ function validatePort(maybePort) {
     } else {
       throw new TypeError(`Invalid port: ${maybePort}`);
     }
-  } else if (port < 0 || port > 65535) {
+  } else if (port < (isServer ? 0 : 1) || port > 65535) {
+    // Servers may bind to port 0 (OS-assigned), clients may not connect to it.
     throw new RangeError(`Invalid port (out of range): ${maybePort}`);
   }
   return port;
@@ -584,10 +663,10 @@ function createListenDatagram(udpOpFn, unixOpFn) {
   return function listenDatagram(args) {
     switch (args.transport) {
       case "udp": {
-        const port = validatePort(args.port);
+        const port = validatePort(args.port, true);
         const { 0: rid, 1: addr } = udpOpFn(
           {
-            hostname: args.hostname ?? "127.0.0.1",
+            hostname: args.hostname ?? "0.0.0.0",
             port,
           },
           args.reuseAddress ?? false,
@@ -613,16 +692,52 @@ function createListenDatagram(udpOpFn, unixOpFn) {
 async function connect(args) {
   switch (args.transport ?? "tcp") {
     case "tcp": {
+      const signal = args?.signal;
+      if (signal) {
+        signal.throwIfAborted();
+      }
       const port = validatePort(args.port);
-      const { 0: rid, 1: localAddr, 2: remoteAddr } = await op_net_connect_tcp(
-        {
-          hostname: args.hostname ?? "127.0.0.1",
-          port,
-        },
-      );
-      localAddr.transport = "tcp";
-      remoteAddr.transport = "tcp";
-      return new TcpConn(rid, remoteAddr, localAddr);
+      let cancelRid;
+      let abortHandler;
+
+      try {
+        if (signal) {
+          cancelRid = createCancelHandle();
+          abortHandler = () => core.tryClose(cancelRid);
+          signal[abortSignal.add](abortHandler);
+        }
+
+        const { 0: rid, 1: localAddr, 2: remoteAddr } =
+          await op_net_connect_tcp(
+            {
+              hostname: args.hostname ?? "127.0.0.1",
+              port,
+            },
+            undefined,
+            cancelRid,
+            {
+              autoSelectFamily: args.autoSelectFamily ?? true,
+              autoSelectFamilyAttemptDelay: args.autoSelectFamilyAttemptDelay ??
+                250,
+            },
+          );
+        localAddr.transport = "tcp";
+        remoteAddr.transport = "tcp";
+
+        return new TcpConn(rid, remoteAddr, localAddr);
+      } finally {
+        if (cancelRid !== undefined) {
+          // The op consumes this on its normal path. Close it here as well in
+          // case the op returned before taking ownership.
+          core.tryClose(cancelRid);
+        }
+        if (abortHandler !== undefined) {
+          signal[abortSignal.remove](abortHandler);
+        }
+        if (signal) {
+          signal.throwIfAborted();
+        }
+      }
     }
     case "unix": {
       const { 0: rid, 1: localAddr, 2: remoteAddr } = await op_net_connect_unix(
@@ -634,21 +749,35 @@ async function connect(args) {
         { transport: "unix", path: localAddr },
       );
     }
+    case "vsock": {
+      const { 0: rid, 1: localAddr, 2: remoteAddr } =
+        await op_net_connect_vsock(args.cid, args.port);
+      return new VsockConn(
+        rid,
+        { transport: "vsock", cid: remoteAddr[0], port: remoteAddr[1] },
+        { transport: "vsock", cid: localAddr[0], port: localAddr[1] },
+      );
+    }
     default:
       throw new TypeError(`Unsupported transport: '${transport}'`);
   }
 }
 
-export {
+return {
   Conn,
   connect,
   createListenDatagram,
+  dropMembership,
   listen,
   Listener,
   listenOptionApiName,
   resolveDns,
-  shutdown,
+  setDatagramBroadcast,
+  setMulticastLoopback,
+  setMulticastTTL,
   TcpConn,
   UnixConn,
   validatePort,
+  VsockConn,
 };
+})();

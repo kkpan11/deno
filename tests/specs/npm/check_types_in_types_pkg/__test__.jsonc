@@ -2,9 +2,6 @@
   "tempDir": true,
   "tests": {
     "byonm": {
-      "envs": {
-        "DENO_FUTURE": "1"
-      },
       "steps": [{
         "args": "install",
         "output": "[WILDCARD]"
@@ -15,12 +12,15 @@
       }]
     },
     "auto_install": {
-      "args": "check --node-modules-dir=true --quiet main_auto_install.ts",
+      "args": "check --node-modules-dir=auto --quiet main_auto_install.ts",
       "exitCode": 1,
       "output": "expected.out"
     },
     "global_folder": {
-      "args": "check --node-modules-dir=false --quiet main_auto_install.ts",
+      // ignored: with node_modules_dir "none" (global folder), tsc can't
+      // resolve the npm package. https://github.com/denoland/deno/issues/36085
+      "ignore": true,
+      "args": "check --node-modules-dir=none --quiet main_auto_install.ts",
       "exitCode": 1,
       "output": "expected.out"
     }

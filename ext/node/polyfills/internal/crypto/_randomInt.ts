@@ -1,59 +1,94 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
+(function () {
+const { core, primordials } = __bootstrap;
+const { op_node_random_int } = core.ops;
+const {
+  ERR_INVALID_ARG_TYPE,
+  ERR_OUT_OF_RANGE,
+} = core.loadExtScript("ext:deno_node/internal/errors.ts");
+const { validateFunction } = core.loadExtScript(
+  "ext:deno_node/internal/validators.mjs",
+);
+const {
+  MathCeil,
+  MathFloor,
+  NumberIsSafeInteger,
+} = primordials;
 
-// TODO(petamoriken): enable prefer-primordials for node polyfills
-// deno-lint-ignore-file prefer-primordials
+// Largest integer that can be expressed in 6 bytes, mirrors Node's RAND_MAX
+// in lib/internal/crypto/random.js.
+const RAND_MAX = 0xFFFF_FFFF_FFFF;
 
-import { op_node_random_int } from "ext:core/ops";
-
-export default function randomInt(max: number): number;
-export default function randomInt(min: number, max: number): number;
-export default function randomInt(
+function randomInt(max: number): number;
+function randomInt(min: number, max: number): number;
+function randomInt(
   max: number,
   cb: (err: Error | null, n?: number) => void,
 ): void;
-export default function randomInt(
+function randomInt(
   min: number,
   max: number,
   cb: (err: Error | null, n?: number) => void,
 ): void;
 
-export default function randomInt(
-  max: number,
-  min?: ((err: Error | null, n?: number) => void) | number,
-  cb?: (err: Error | null, n?: number) => void,
+// Generates an integer in [min, max) range where min is inclusive and max is
+// exclusive. Matches Node's lib/internal/crypto/random.js randomInt().
+function randomInt(
+  min: number,
+  max?: ((err: Error | null, n?: number) => void) | number,
+  callback?: (err: Error | null, n?: number) => void,
 ): number | void {
-  if (typeof max === "number" && typeof min === "number") {
-    [max, min] = [min, max];
-  }
-  if (min === undefined) min = 0;
-  else if (typeof min === "function") {
-    cb = min;
+  // Detect optional min syntax
+  // randomInt(max)
+  // randomInt(max, callback)
+  const minNotSpecified = typeof max === "undefined" ||
+    typeof max === "function";
+
+  if (minNotSpecified) {
+    callback = max as (err: Error | null, n?: number) => void;
+    max = min;
     min = 0;
   }
 
-  if (
-    !Number.isSafeInteger(min) ||
-    typeof max === "number" && !Number.isSafeInteger(max)
-  ) {
-    throw new Error("max or min is not a Safe Number");
+  const isSync = typeof callback === "undefined";
+  if (!isSync) {
+    validateFunction(callback, "callback");
+  }
+  if (!NumberIsSafeInteger(min)) {
+    throw new ERR_INVALID_ARG_TYPE("min", "a safe integer", min);
+  }
+  if (!NumberIsSafeInteger(max)) {
+    throw new ERR_INVALID_ARG_TYPE("max", "a safe integer", max);
+  }
+  if ((max as number) <= min) {
+    throw new ERR_OUT_OF_RANGE(
+      "max",
+      `greater than the value of "min" (${min})`,
+      max,
+    );
   }
 
-  if (max - min > Math.pow(2, 48)) {
-    throw new RangeError("max - min should be less than 2^48!");
+  const range = (max as number) - min;
+  if (!(range <= RAND_MAX)) {
+    throw new ERR_OUT_OF_RANGE(
+      `max${minNotSpecified ? "" : " - min"}`,
+      `<= ${RAND_MAX}`,
+      range,
+    );
   }
 
-  if (min >= max) {
-    throw new Error("Min is bigger than Max!");
-  }
+  min = MathCeil(min);
+  const result = op_node_random_int(min, MathFloor(max as number));
 
-  min = Math.ceil(min);
-  max = Math.floor(max);
-  const result = op_node_random_int(min, max);
-
-  if (cb) {
-    cb(null, result);
+  if (!isSync) {
+    callback!(null, result);
     return;
   }
 
   return result;
 }
+
+return {
+  default: randomInt,
+};
+})();

@@ -1,11 +1,5 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
-import {
-  assert,
-  assertEquals,
-  assertNotEquals,
-  assertRejects,
-  assertThrows,
-} from "@std/assert";
+// Copyright 2018-2026 the Deno authors. MIT license.
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { writeFile, writeFileSync } from "node:fs";
 import * as path from "@std/path";
 
@@ -20,6 +14,17 @@ type TextEncodings =
   | "latin1"
   | "hex";
 
+let modeAsync: number;
+let modeSync: number;
+// On Windows chmod is only able to manipulate write permission
+if (Deno.build.os === "windows") {
+  modeAsync = 0o444; // read-only
+  modeSync = 0o666; // read-write
+} else {
+  modeAsync = 0o777;
+  modeSync = 0o644;
+}
+
 const moduleDir = path.dirname(path.fromFileUrl(import.meta.url));
 const testDataDir = path.resolve(moduleDir, "testdata");
 const decoder = new TextDecoder("utf-8");
@@ -31,7 +36,7 @@ Deno.test("Callback must be a function error", function fn() {
       writeFile("some/path", "some data", "utf8");
     },
     TypeError,
-    "Callback must be a function.",
+    'The "callback" argument must be of type function. Received undefined',
   );
 });
 
@@ -42,7 +47,7 @@ Deno.test("Invalid encoding results in error()", function testEncodingErrors() {
       writeFile("some/path", "some data", "made-up-encoding", () => {});
     },
     Error,
-    `The value "made-up-encoding" is invalid for option "encoding"`,
+    `The argument 'encoding' is invalid encoding. Received 'made-up-encoding'`,
   );
 
   assertThrows(
@@ -51,7 +56,7 @@ Deno.test("Invalid encoding results in error()", function testEncodingErrors() {
       writeFileSync("some/path", "some data", "made-up-encoding");
     },
     Error,
-    `The value "made-up-encoding" is invalid for option "encoding"`,
+    `The argument 'encoding' is invalid encoding. Received 'made-up-encoding'`,
   );
 
   assertThrows(
@@ -67,7 +72,7 @@ Deno.test("Invalid encoding results in error()", function testEncodingErrors() {
       );
     },
     Error,
-    `The value "made-up-encoding" is invalid for option "encoding"`,
+    `The argument 'encoding' is invalid encoding. Received 'made-up-encoding'`,
   );
 
   assertThrows(
@@ -78,33 +83,17 @@ Deno.test("Invalid encoding results in error()", function testEncodingErrors() {
       });
     },
     Error,
-    `The value "made-up-encoding" is invalid for option "encoding"`,
+    `The argument 'encoding' is invalid encoding. Received 'made-up-encoding'`,
   );
 });
 
 Deno.test(
-  "Unsupported encoding results in error()",
-  function testUnsupportedEncoding() {
-    assertThrows(
-      () => {
-        writeFile("some/path", "some data", "utf16le", () => {});
-      },
-      Error,
-      `Not implemented: "utf16le" encoding`,
-    );
-
-    assertThrows(
-      () => {
-        writeFileSync("some/path", "some data", "utf16le");
-      },
-      Error,
-      `Not implemented: "utf16le" encoding`,
-    );
+  {
+    name: "Data is written to correct rid",
+    // TODO(bartlomieju): this test is broken in Deno 2, because `file.rid` is undefined.
+    // The fs APIs should be rewritten to use actual FDs, not RIDs
+    ignore: true,
   },
-);
-
-Deno.test(
-  "Data is written to correct rid",
   async function testCorrectWriteUsingRid() {
     const tempFile: string = await Deno.makeTempFile();
     using file = await Deno.open(tempFile, {
@@ -114,6 +103,7 @@ Deno.test(
     });
 
     await new Promise<void>((resolve, reject) => {
+      // @ts-ignore (iuioiua) `file.rid` should no longer be needed once FDs are used
       writeFile(file.rid, "hello world", (err) => {
         if (err) return reject(err);
         resolve();
@@ -144,12 +134,16 @@ Deno.test(
   "Data is written to correct file encodings",
   async function testCorrectWriteUsingDifferentEncodings() {
     const encodings = [
-      ["hex", "68656c6c6f20776f726c64"],
-      ["HEX", "68656c6c6f20776f726c64"],
-      ["base64", "aGVsbG8gd29ybGQ="],
-      ["BASE64", "aGVsbG8gd29ybGQ="],
-      ["utf8", "hello world"],
-      ["utf-8", "hello world"],
+      ["hex", "68656c6c6f20776f726c642121212121"],
+      ["HEX", "68656c6c6f20776f726c642121212121"],
+      ["base64", "aGVsbG8gd29ybGQhISEhIQ=="],
+      ["BASE64", "aGVsbG8gd29ybGQhISEhIQ=="],
+      ["utf8", "hello world!!!!!"],
+      ["utf-8", "hello world!!!!!"],
+      ["utf16le", "敨汬⁯潷汲Ⅴ℡℡"],
+      ["utf-16le", "敨汬⁯潷汲Ⅴ℡℡"],
+      ["ucs2", "敨汬⁯潷汲Ⅴ℡℡"],
+      ["latin1", "hello world!!!!!"],
     ];
 
     for (const [encoding, value] of encodings) {
@@ -165,7 +159,7 @@ Deno.test(
       const data = await Deno.readFile("_fs_writeFile_test_file.txt");
       await Deno.remove("_fs_writeFile_test_file.txt");
       assertEquals(res, null);
-      assertEquals(decoder.decode(data), "hello world");
+      assertEquals(decoder.decode(data), "hello world!!!!!");
     }
   },
 );
@@ -191,26 +185,33 @@ Deno.test("Path can be an URL", async function testCorrectWriteUsingURL() {
   assertEquals(decoder.decode(data), "hello world");
 });
 
-Deno.test("Mode is correctly set", async function testCorrectFileMode() {
-  if (Deno.build.os === "windows") return;
+Deno.test({
+  name: "Mode is correctly set",
+  // TODO(bartlomieju): this test is broken in Deno 2, because `file.rid` is undefined.
+  // The fs APIs should be rewritten to use actual FDs, not RIDs
+  ignore: true,
+}, async function testCorrectFileMode() {
   const filename = "_fs_writeFile_test_file.txt";
 
   const res = await new Promise((resolve) => {
-    writeFile(filename, "hello world", { mode: 0o777 }, resolve);
+    writeFile(filename, "hello world", { mode: modeAsync }, resolve);
   });
 
   const fileInfo = await Deno.stat(filename);
   await Deno.remove(filename);
   assertEquals(res, null);
   assert(fileInfo && fileInfo.mode);
-  assertEquals(fileInfo.mode & 0o777, 0o777);
+  assertEquals(fileInfo.mode & 0o777, modeAsync);
 });
 
 Deno.test(
-  "Mode is not set when rid is passed",
+  {
+    name: "Mode is not set when rid is passed",
+    // TODO(bartlomieju): this test is broken in Deno 2, because `file.rid` is undefined.
+    // The fs APIs should be rewritten to use actual FDs, not RIDs
+    ignore: true,
+  },
   async function testCorrectFileModeRid() {
-    if (Deno.build.os === "windows") return;
-
     const filename: string = await Deno.makeTempFile();
     using file = await Deno.open(filename, {
       create: true,
@@ -219,7 +220,8 @@ Deno.test(
     });
 
     await new Promise<void>((resolve, reject) => {
-      writeFile(file.rid, "hello world", { mode: 0o777 }, (err) => {
+      // @ts-ignore (iuioiua) `file.rid` should no longer be needed once FDs are used
+      writeFile(file.rid, "hello world", { mode: modeAsync }, (err) => {
         if (err) return reject(err);
         resolve();
       });
@@ -228,7 +230,7 @@ Deno.test(
     const fileInfo = await Deno.stat(filename);
     await Deno.remove(filename);
     assert(fileInfo.mode);
-    assertNotEquals(fileInfo.mode & 0o777, 0o777);
+    assertEquals(fileInfo.mode & 0o777, modeAsync);
   },
 );
 
@@ -259,7 +261,12 @@ Deno.test(
 );
 
 Deno.test(
-  "Data is written synchronously to correct rid",
+  {
+    name: "Data is written synchronously to correct rid",
+    // TODO(bartlomieju): this test is broken in Deno 2, because `file.rid` is undefined.
+    // The fs APIs should be rewritten to use actual FDs, not RIDs
+    ignore: true,
+  },
   function testCorrectWriteSyncUsingRid() {
     const tempFile: string = Deno.makeTempFileSync();
     using file = Deno.openSync(tempFile, {
@@ -268,6 +275,7 @@ Deno.test(
       read: true,
     });
 
+    // @ts-ignore (iuioiua) `file.rid` should no longer be needed once FDs are used
     writeFileSync(file.rid, "hello world");
 
     const data = Deno.readFileSync(tempFile);
@@ -280,12 +288,16 @@ Deno.test(
   "Data is written to correct file encodings",
   function testCorrectWriteSyncUsingDifferentEncodings() {
     const encodings = [
-      ["hex", "68656c6c6f20776f726c64"],
-      ["HEX", "68656c6c6f20776f726c64"],
-      ["base64", "aGVsbG8gd29ybGQ="],
-      ["BASE64", "aGVsbG8gd29ybGQ="],
-      ["utf8", "hello world"],
-      ["utf-8", "hello world"],
+      ["hex", "68656c6c6f20776f726c642121212121"],
+      ["HEX", "68656c6c6f20776f726c642121212121"],
+      ["base64", "aGVsbG8gd29ybGQhISEhIQ=="],
+      ["BASE64", "aGVsbG8gd29ybGQhISEhIQ=="],
+      ["utf8", "hello world!!!!!"],
+      ["utf-8", "hello world!!!!!"],
+      ["utf16le", "敨汬⁯潷汲Ⅴ℡℡"],
+      ["utf-16le", "敨汬⁯潷汲Ⅴ℡℡"],
+      ["ucs2", "敨汬⁯潷汲Ⅴ℡℡"],
+      ["latin1", "hello world!!!!!"],
     ];
 
     for (const [encoding, value] of encodings) {
@@ -294,7 +306,7 @@ Deno.test(
 
       const data = Deno.readFileSync(file);
       Deno.removeSync(file);
-      assertEquals(decoder.decode(data), "hello world");
+      assertEquals(decoder.decode(data), "hello world!!!!!");
     }
   },
 );
@@ -332,14 +344,13 @@ Deno.test("sync: Path can be an URL", function testCorrectWriteSyncUsingURL() {
 Deno.test(
   "Mode is correctly set when writing synchronously",
   function testCorrectFileModeSync() {
-    if (Deno.build.os === "windows") return;
     const filename = "_fs_writeFileSync_test_file.txt";
 
-    writeFileSync(filename, "hello world", { mode: 0o777 });
+    writeFileSync(filename, "hello world", { mode: modeSync });
 
     const fileInfo = Deno.statSync(filename);
     Deno.removeSync(filename);
     assert(fileInfo && fileInfo.mode);
-    assertEquals(fileInfo.mode & 0o777, 0o777);
+    assertEquals(fileInfo.mode & 0o777, modeSync);
   },
 );

@@ -1,4 +1,4 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 import {
   assert,
   assertEquals,
@@ -48,16 +48,30 @@ Deno.test({ permissions: { env: true } }, function avoidEmptyNamedEnv() {
   assertThrows(() => Deno.env.delete("a\0a"), TypeError);
 });
 
-Deno.test({ permissions: { env: false } }, function envPermissionDenied1() {
-  assertThrows(() => {
-    Deno.env.toObject();
-  }, Deno.errors.PermissionDenied);
+// Regression test for https://github.com/denoland/deno/issues/23443
+// Every key returned by `toObject()` must be one that `get()` accepts.
+// On Windows, cmd.exe injects hidden per-drive cwd variables such as `=C:`
+// that contain `=`, which used to be enumerated but were not gettable.
+Deno.test({ permissions: { env: true } }, function envToObjectKeysAreValid() {
+  for (const key of Object.keys(Deno.env.toObject())) {
+    assert(key.length > 0, "toObject() returned an empty key");
+    assert(!key.includes("="), `toObject() returned an invalid key: ${key}`);
+    assert(!key.includes("\0"), `toObject() returned an invalid key: ${key}`);
+    // Must not throw.
+    Deno.env.get(key);
+  }
 });
 
-Deno.test({ permissions: { env: false } }, function envPermissionDenied2() {
+Deno.test({ permissions: { env: false } }, function envPerm1() {
+  assertThrows(() => {
+    Deno.env.toObject();
+  }, Deno.errors.NotCapable);
+});
+
+Deno.test({ permissions: { env: false } }, function envPerm2() {
   assertThrows(() => {
     Deno.env.get("PATH");
-  }, Deno.errors.PermissionDenied);
+  }, Deno.errors.NotCapable);
 });
 
 // This test verifies that on Windows, environment variables are
@@ -79,7 +93,9 @@ Deno.test(
     ) => {
       const src = `
       console.log(
-        ${JSON.stringify(Object.keys(expectedEnv))}.map(k => Deno.env.get(k))
+        ${
+        JSON.stringify(Object.keys(expectedEnv))
+      }.map(k => Deno.env.get(k) ?? null)
       )`;
       const { success, stdout } = await new Deno.Command(Deno.execPath(), {
         args: ["eval", src],
@@ -172,7 +188,7 @@ Deno.test(
   async function osPpidIsEqualToPidOfParentProcess() {
     const decoder = new TextDecoder();
     const { stdout } = await new Deno.Command(Deno.execPath(), {
-      args: ["eval", "-p", "--unstable", "Deno.ppid"],
+      args: ["eval", "-p", "Deno.ppid"],
       env: { NO_COLOR: "true" },
     }).output();
 
@@ -182,18 +198,8 @@ Deno.test(
   },
 );
 
-Deno.test({ permissions: { read: true } }, function execPath() {
+Deno.test({ permissions: { read: false } }, function execPath() {
   assertNotEquals(Deno.execPath(), "");
-});
-
-Deno.test({ permissions: { read: false } }, function execPathPerm() {
-  assertThrows(
-    () => {
-      Deno.execPath();
-    },
-    Deno.errors.PermissionDenied,
-    "Requires read access to <exec_path>, run again with the --allow-read flag",
-  );
 });
 
 Deno.test(
@@ -206,7 +212,7 @@ Deno.test(
       () => {
         Deno.readTextFileSync("/proc/net/dev");
       },
-      Deno.errors.PermissionDenied,
+      Deno.errors.NotCapable,
       `Requires all access to "/proc/net/dev", run again with the --allow-all flag`,
     );
   },
@@ -223,7 +229,7 @@ Deno.test(
 Deno.test({ permissions: { sys: false } }, function loadavgPerm() {
   assertThrows(() => {
     Deno.loadavg();
-  }, Deno.errors.PermissionDenied);
+  }, Deno.errors.NotCapable);
 });
 
 Deno.test(
@@ -239,6 +245,11 @@ Deno.test(
   async function hostnameWithoutOtherNetworkUsages() {
     const { stdout } = await new Deno.Command(Deno.execPath(), {
       args: ["eval", "-p", "Deno.hostname()"],
+      env: {
+        LD_PRELOAD: "",
+        LD_LIBRARY_PATH: "",
+        DYLD_FALLBACK_LIBRARY_PATH: "",
+      },
     }).output();
     const hostname = new TextDecoder().decode(stdout).trim();
     assert(hostname.length > 0);
@@ -248,7 +259,7 @@ Deno.test(
 Deno.test({ permissions: { sys: false } }, function hostnamePerm() {
   assertThrows(() => {
     Deno.hostname();
-  }, Deno.errors.PermissionDenied);
+  }, Deno.errors.NotCapable);
 });
 
 Deno.test(
@@ -261,7 +272,7 @@ Deno.test(
 Deno.test({ permissions: { sys: false } }, function releasePerm() {
   assertThrows(() => {
     Deno.osRelease();
-  }, Deno.errors.PermissionDenied);
+  }, Deno.errors.NotCapable);
 });
 
 Deno.test({ permissions: { sys: ["osUptime"] } }, function osUptime() {
@@ -273,7 +284,7 @@ Deno.test({ permissions: { sys: ["osUptime"] } }, function osUptime() {
 Deno.test({ permissions: { sys: false } }, function osUptimePerm() {
   assertThrows(() => {
     Deno.osUptime();
-  }, Deno.errors.PermissionDenied);
+  }, Deno.errors.NotCapable);
 });
 
 Deno.test(

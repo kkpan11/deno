@@ -1,3 +1,0 @@
-[# note no warning]
-error: Uncaught SyntaxError: The requested module 'npm:@denotest/node-lifecycle-scripts' does not provide an export named 'value'
-[WILDCARD]

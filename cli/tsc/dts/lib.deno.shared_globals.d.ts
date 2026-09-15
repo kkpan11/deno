@@ -1,4 +1,4 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 // Documentation partially adapted from [MDN](https://developer.mozilla.org/),
 // by Mozilla Contributors, which is licensed under CC-BY-SA 2.5.
@@ -13,15 +13,27 @@
 /// <reference lib="deno.fetch" />
 /// <reference lib="deno.websocket" />
 /// <reference lib="deno.crypto" />
+/// <reference lib="deno.ns" />
+/// <reference lib="deno.broadcast_channel" />
+/// <reference lib="node" />
 
-/** @category WASM */
+/** The `WebAssembly` JavaScript object acts as the namespace for all
+ * [WebAssembly](https://developer.mozilla.org/en-US/docs/WebAssembly)-related
+ * functionality. Unlike most global objects, it is not a constructor; it groups
+ * the functions used to compile and instantiate WebAssembly modules together
+ * with the classes (`Module`, `Instance`, `Memory`, `Table`, `Global`) and
+ * error types used to work with them.
+ *
+ * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly)
+ *
+ * @category Wasm */
 declare namespace WebAssembly {
   /**
    * The `WebAssembly.CompileError` object indicates an error during WebAssembly decoding or validation.
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/CompileError)
    *
-   * @category WASM
+   * @category Wasm
    */
   export class CompileError extends Error {
     /** Creates a new `WebAssembly.CompileError` object. */
@@ -35,7 +47,7 @@ declare namespace WebAssembly {
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/Global)
    *
-   * @category WASM
+   * @category Wasm
    */
   export class Global {
     /** Creates a new `Global` object. */
@@ -58,7 +70,7 @@ declare namespace WebAssembly {
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/Instance)
    *
-   * @category WASM
+   * @category Wasm
    */
   export class Instance {
     /** Creates a new Instance object. */
@@ -78,7 +90,7 @@ declare namespace WebAssembly {
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/LinkError)
    *
-   * @category WASM
+   * @category Wasm
    */
   export class LinkError extends Error {
     /** Creates a new WebAssembly.LinkError object. */
@@ -94,7 +106,7 @@ declare namespace WebAssembly {
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/Memory)
    *
-   * @category WASM
+   * @category Wasm
    */
   export class Memory {
     /** Creates a new `Memory` object. */
@@ -116,7 +128,7 @@ declare namespace WebAssembly {
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/Module)
    *
-   * @category WASM
+   * @category Wasm
    */
   export class Module {
     /** Creates a new `Module` object. */
@@ -144,7 +156,7 @@ declare namespace WebAssembly {
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/RuntimeError)
    *
-   * @category WASM
+   * @category Wasm
    */
   export class RuntimeError extends Error {
     /** Creates a new `WebAssembly.RuntimeError` object. */
@@ -159,7 +171,7 @@ declare namespace WebAssembly {
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/Table)
    *
-   * @category WASM
+   * @category Wasm
    */
   export class Table {
     /** Creates a new `Table` object. */
@@ -181,62 +193,79 @@ declare namespace WebAssembly {
   /** The `GlobalDescriptor` describes the options you can pass to
    * `new WebAssembly.Global()`.
    *
-   * @category WASM
+   * @category Wasm
    */
   export interface GlobalDescriptor {
+    /** Whether the global variable can be modified after creation. Defaults to
+     * `false`. */
     mutable?: boolean;
+    /** The data type of the global variable. */
     value: ValueType;
   }
 
   /** The `MemoryDescriptor` describes the options you can pass to
    * `new WebAssembly.Memory()`.
    *
-   * @category WASM
+   * @category Wasm
    */
   export interface MemoryDescriptor {
+    /** The initial size of the memory, in units of WebAssembly pages (64KB
+     * each). */
     initial: number;
+    /** The maximum size the memory is allowed to grow to, in units of
+     * WebAssembly pages. */
     maximum?: number;
+    /** Whether the memory is shared between agents (backed by a
+     * `SharedArrayBuffer`). Defaults to `false`. */
     shared?: boolean;
   }
 
   /** A `ModuleExportDescriptor` is the description of a declared export in a
    * `WebAssembly.Module`.
    *
-   * @category WASM
+   * @category Wasm
    */
   export interface ModuleExportDescriptor {
+    /** The kind of entity being exported. */
     kind: ImportExportKind;
+    /** The name under which the entity is exported. */
     name: string;
   }
 
   /** A `ModuleImportDescriptor` is the description of a declared import in a
    * `WebAssembly.Module`.
    *
-   * @category WASM
+   * @category Wasm
    */
   export interface ModuleImportDescriptor {
+    /** The kind of entity being imported. */
     kind: ImportExportKind;
+    /** The name of the module the entity is imported from. */
     module: string;
+    /** The name of the imported entity within its module. */
     name: string;
   }
 
   /** The `TableDescriptor` describes the options you can pass to
    * `new WebAssembly.Table()`.
    *
-   * @category WASM
+   * @category Wasm
    */
   export interface TableDescriptor {
+    /** The type of value stored in the table. */
     element: TableKind;
+    /** The initial number of elements in the table. */
     initial: number;
+    /** The maximum number of elements the table is allowed to grow to. */
     maximum?: number;
   }
 
   /** The value returned from `WebAssembly.instantiate`.
    *
-   * @category WASM
+   * @category Wasm
    */
   export interface WebAssemblyInstantiatedSource {
-    /* A `WebAssembly.Instance` object that contains all the exported WebAssembly functions. */
+    /** A `WebAssembly.Instance` object that contains all the exported WebAssembly functions. */
     instance: Instance;
 
     /**
@@ -246,21 +275,39 @@ declare namespace WebAssembly {
     module: Module;
   }
 
-  /** @category WASM */
+  /** The kind of entity referenced by a module import or export descriptor.
+   *
+   * @category Wasm */
   export type ImportExportKind = "function" | "global" | "memory" | "table";
-  /** @category WASM */
+  /** The type of value stored in a `WebAssembly.Table`.
+   *
+   * @category Wasm */
   export type TableKind = "anyfunc";
-  /** @category WASM */
+  /** The data type of a WebAssembly value, used to describe globals.
+   *
+   * @category Wasm */
   export type ValueType = "f32" | "f64" | "i32" | "i64";
-  /** @category WASM */
+  /** A value that can be exported from a WebAssembly module instance.
+   *
+   * @category Wasm */
   export type ExportValue = Function | Global | Memory | Table;
-  /** @category WASM */
+  /** The set of values exported by a WebAssembly module instance, keyed by
+   * export name.
+   *
+   * @category Wasm */
   export type Exports = Record<string, ExportValue>;
-  /** @category WASM */
+  /** A value that can be supplied to a WebAssembly module as an import.
+   *
+   * @category Wasm */
   export type ImportValue = ExportValue | number;
-  /** @category WASM */
+  /** The set of values imported from a single module, keyed by import name.
+   *
+   * @category Wasm */
   export type ModuleImports = Record<string, ImportValue>;
-  /** @category WASM */
+  /** The import object supplied when instantiating a WebAssembly module,
+   * grouping imported values by module name.
+   *
+   * @category Wasm */
   export type Imports = Record<string, ModuleImports>;
 
   /**
@@ -271,7 +318,7 @@ declare namespace WebAssembly {
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/compile)
    *
-   * @category WASM
+   * @category Wasm
    */
   export function compile(bytes: BufferSource): Promise<Module>;
 
@@ -283,7 +330,7 @@ declare namespace WebAssembly {
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/compileStreaming)
    *
-   * @category WASM
+   * @category Wasm
    */
   export function compileStreaming(
     source: Response | Promise<Response>,
@@ -300,7 +347,7 @@ declare namespace WebAssembly {
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/instantiate)
    *
-   * @category WASM
+   * @category Wasm
    */
   export function instantiate(
     bytes: BufferSource,
@@ -317,7 +364,7 @@ declare namespace WebAssembly {
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/instantiate)
    *
-   * @category WASM
+   * @category Wasm
    */
   export function instantiate(
     moduleObject: Module,
@@ -331,7 +378,7 @@ declare namespace WebAssembly {
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/instantiateStreaming)
    *
-   * @category WASM
+   * @category Wasm
    */
   export function instantiateStreaming(
     response: Response | PromiseLike<Response>,
@@ -345,74 +392,13 @@ declare namespace WebAssembly {
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/validate)
    *
-   * @category WASM
+   * @category Wasm
    */
   export function validate(bytes: BufferSource): boolean;
 }
 
-/** Sets a timer which executes a function once after the delay (in milliseconds) elapses. Returns
- * an id which may be used to cancel the timeout.
- *
- * ```ts
- * setTimeout(() => { console.log('hello'); }, 500);
- * ```
- *
- * @category Platform
- */
-declare function setTimeout(
-  /** callback function to execute when timer expires */
-  cb: (...args: any[]) => void,
-  /** delay in ms */
-  delay?: number,
-  /** arguments passed to callback function */
-  ...args: any[]
-): number;
-
-/** Repeatedly calls a function , with a fixed time delay between each call.
- *
- * ```ts
- * // Outputs 'hello' to the console every 500ms
- * setInterval(() => { console.log('hello'); }, 500);
- * ```
- *
- * @category Platform
- */
-declare function setInterval(
-  /** callback function to execute when timer expires */
-  cb: (...args: any[]) => void,
-  /** delay in ms */
-  delay?: number,
-  /** arguments passed to callback function */
-  ...args: any[]
-): number;
-
-/** Cancels a timed, repeating action which was previously started by a call
- * to `setInterval()`
- *
- * ```ts
- * const id = setInterval(() => {console.log('hello');}, 500);
- * // ...
- * clearInterval(id);
- * ```
- *
- * @category Platform
- */
-declare function clearInterval(id?: number): void;
-
-/** Cancels a scheduled action initiated by `setTimeout()`
- *
- * ```ts
- * const id = setTimeout(() => {console.log('hello');}, 500);
- * // ...
- * clearTimeout(id);
- * ```
- *
- * @category Platform
- */
-declare function clearTimeout(id?: number): void;
-
 /** @category Platform */
-declare interface VoidFunction {
+interface VoidFunction {
   (): void;
 }
 
@@ -443,8 +429,105 @@ declare function queueMicrotask(func: VoidFunction): void;
  */
 declare function dispatchEvent(event: Event): boolean;
 
+/**
+ * A global console object that provides methods for logging, debugging, and error reporting.
+ * The console object provides access to the browser's or runtime's debugging console functionality.
+ * It allows developers to output text and data for debugging purposes.
+ *
+ * @example
+ * ```typescript
+ * console.log("Hello, world!");
+ * console.error("An error occurred");
+ * console.warn("Warning message");
+ * console.debug("Debug information");
+ * ```
+ *
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/console
+ *
+ * @category I/O
+ */
+declare var console: Console;
+
+/**
+ * A brand and version pair describing a user agent, as returned by
+ * {@linkcode NavigatorUAData}.
+ *
+ * @category Platform
+ */
+interface NavigatorUABrandVersion {
+  readonly brand: string;
+  readonly version: string;
+}
+
+/**
+ * The values returned by {@linkcode NavigatorUAData.getHighEntropyValues}.
+ *
+ * @category Platform
+ */
+interface UADataValues {
+  readonly brands?: NavigatorUABrandVersion[];
+  readonly mobile?: boolean;
+  readonly platform?: string;
+  readonly architecture?: string;
+  readonly bitness?: string;
+  readonly formFactors?: string[];
+  readonly fullVersionList?: NavigatorUABrandVersion[];
+  readonly model?: string;
+  readonly platformVersion?: string;
+  readonly uaFullVersion?: string;
+  readonly wow64?: boolean;
+}
+
+/**
+ * The low-entropy values returned by {@linkcode NavigatorUAData.toJSON}.
+ *
+ * @category Platform
+ */
+interface UALowEntropyJSON {
+  readonly brands: NavigatorUABrandVersion[];
+  readonly mobile: boolean;
+  readonly platform: string;
+}
+
+/**
+ * Gives access to information about the runtime's user agent, exposed via
+ * {@linkcode Navigator.userAgentData}. This is the
+ * [User-Agent Client Hints API](https://developer.mozilla.org/en-US/docs/Web/API/NavigatorUAData).
+ *
+ * @category Platform
+ */
+interface NavigatorUAData {
+  /** A list of the runtime's brand and major version. */
+  readonly brands: NavigatorUABrandVersion[];
+  /** Whether the runtime reports itself as a mobile device. Always `false` in Deno. */
+  readonly mobile: boolean;
+  /** The platform the runtime is running on (e.g. `"Linux"`, `"macOS"`, `"Windows"`). */
+  readonly platform: string;
+  /**
+   * Resolves with the requested high-entropy values. Unrecognized hints are
+   * ignored. The low-entropy values (`brands`, `mobile`, `platform`) are always
+   * included.
+   */
+  getHighEntropyValues(hints: string[]): Promise<UADataValues>;
+  /** Returns a JSON representation of the low-entropy values. */
+  toJSON(): UALowEntropyJSON;
+}
+
+/**
+ * Constructor for {@linkcode NavigatorUAData} objects.
+ *
+ * Note: This constructor cannot be used to create new `NavigatorUAData`
+ * instances in Deno.
+ *
+ * @category Platform
+ */
+declare var NavigatorUAData: {
+  readonly prototype: NavigatorUAData;
+  new (): never;
+};
+
 /** @category Platform */
-declare interface DOMStringList {
+interface DOMStringList {
   /** Returns the number of strings in strings. */
   readonly length: number;
   /** Returns true if strings contains string, and false otherwise. */
@@ -455,13 +538,13 @@ declare interface DOMStringList {
 }
 
 /** @category Platform */
-declare type BufferSource = ArrayBufferView | ArrayBuffer;
+type BufferSource = ArrayBufferView<ArrayBuffer> | ArrayBuffer;
 
-/** @category I/O */
-declare var console: Console;
+/** @category Platform */
+type AllowSharedBufferSource = ArrayBufferView | ArrayBufferLike;
 
 /** @category Events */
-declare interface ErrorEventInit extends EventInit {
+interface ErrorEventInit extends EventInit {
   message?: string;
   filename?: string;
   lineno?: number;
@@ -470,7 +553,7 @@ declare interface ErrorEventInit extends EventInit {
 }
 
 /** @category Events */
-declare interface ErrorEvent extends Event {
+interface ErrorEvent extends Event {
   readonly message: string;
   readonly filename: string;
   readonly lineno: number;
@@ -478,25 +561,34 @@ declare interface ErrorEvent extends Event {
   readonly error: any;
 }
 
-/** @category Events */
-declare var ErrorEvent: {
+/** The constructor object for {@linkcode ErrorEvent}, used to construct an
+ * event describing an uncaught error, such as the one dispatched on the global
+ * scope as `error`.
+ *
+ * @category Events */
+declare var ErrorEvent: typeof globalThis extends
+  { document: any; ErrorEvent: infer T } ? T : {
   readonly prototype: ErrorEvent;
   new (type: string, eventInitDict?: ErrorEventInit): ErrorEvent;
 };
 
 /** @category Events */
-declare interface PromiseRejectionEventInit extends EventInit {
+interface PromiseRejectionEventInit extends EventInit {
   promise: Promise<any>;
   reason?: any;
 }
 
 /** @category Events */
-declare interface PromiseRejectionEvent extends Event {
+interface PromiseRejectionEvent extends Event {
   readonly promise: Promise<any>;
   readonly reason: any;
 }
 
-/** @category Events */
+/** The constructor object for {@linkcode PromiseRejectionEvent}, used to
+ * construct the event dispatched on the global scope as `unhandledrejection`
+ * and `rejectionhandled` when a promise is rejected without a handler.
+ *
+ * @category Events */
 declare var PromiseRejectionEvent: {
   readonly prototype: PromiseRejectionEvent;
   new (
@@ -506,63 +598,216 @@ declare var PromiseRejectionEvent: {
 };
 
 /** @category Workers */
-declare interface AbstractWorkerEventMap {
+interface AbstractWorkerEventMap {
   "error": ErrorEvent;
 }
 
 /** @category Workers */
-declare interface WorkerEventMap extends AbstractWorkerEventMap {
+interface WorkerEventMap extends AbstractWorkerEventMap {
   "message": MessageEvent;
   "messageerror": MessageEvent;
 }
 
 /** @category Workers */
-declare interface WorkerOptions {
+interface WorkerOptions {
   type?: "classic" | "module";
   name?: string;
 }
 
-/** @category Workers */
-declare interface Worker extends EventTarget {
-  onerror: (this: Worker, e: ErrorEvent) => any | null;
-  onmessage: (this: Worker, e: MessageEvent) => any | null;
-  onmessageerror: (this: Worker, e: MessageEvent) => any | null;
+/**
+ * The Worker interface represents a background task that can be created via the
+ * `new Worker()` constructor. Workers run in a separate thread, allowing for parallel execution
+ * without blocking the main thread.
+ *
+ * Workers can be used to:
+ * - Perform CPU-intensive calculations
+ * - Process large datasets
+ * - Handle tasks in parallel with the main execution thread
+ * - Run code in isolation with its own event loop
+ *
+ * @example
+ * ```ts
+ * // Creating a basic worker (main.ts)
+ * const worker = new Worker(new URL("./worker.ts", import.meta.url).href, {
+ *   type: "module"
+ * });
+ *
+ * // Send data to the worker
+ * worker.postMessage({ command: "start", data: [1, 2, 3, 4] });
+ *
+ * // Receive messages from the worker
+ * worker.onmessage = (e) => {
+ *   console.log("Result from worker:", e.data);
+ *   worker.terminate(); // Stop the worker when done
+ * };
+ *
+ * // Handle worker errors
+ * worker.onerror = (e) => {
+ *   console.error("Worker error:", e.message);
+ * };
+ * ```
+ *
+ * @example
+ * ```ts
+ * // Worker file (worker.ts)
+ * // Worker context: self refers to the worker's global scope
+ * self.onmessage = (e) => {
+ *   if (e.data.command === "start") {
+ *     // Perform calculation with the data
+ *     const result = e.data.data.reduce((sum, num) => sum + num, 0);
+ *     // Send result back to main thread
+ *     self.postMessage(result);
+ *   }
+ * };
+ * ```
+ *
+ * @category Workers
+ */
+interface Worker extends EventTarget {
+  /** Event handler for error events. Fired when an error occurs in the worker's execution context. */
+  onerror: ((this: Worker, e: ErrorEvent) => any) | null;
+
+  /** Event handler for message events. Fired when the worker sends data back to the main thread. */
+  onmessage: ((this: Worker, e: MessageEvent) => any) | null;
+
+  /** Event handler for message error events. Fired when a message cannot be deserialized. */
+  onmessageerror: ((this: Worker, e: MessageEvent) => any) | null;
+
+  /**
+   * Sends a message to the worker, transferring ownership of the specified transferable objects.
+   *
+   * @example
+   * ```ts
+   * // Create a buffer to transfer (not copy) to the worker
+   * const buffer = new ArrayBuffer(1024);
+   * worker.postMessage({ data: buffer }, [buffer]);
+   * // After transfer, buffer is no longer usable in the main thread
+   * ```
+   */
   postMessage(message: any, transfer: Transferable[]): void;
+
+  /**
+   * Sends a message to the worker.
+   *
+   * @example
+   * ```ts
+   * // Send a simple message with data
+   * worker.postMessage({
+   *   command: "process",
+   *   data: [1, 2, 3, 4],
+   *   settings: { optimize: true }
+   * });
+   * ```
+   */
   postMessage(message: any, options?: StructuredSerializeOptions): void;
+
+  /** Adds an event listener to the worker. */
   addEventListener<K extends keyof WorkerEventMap>(
     type: K,
     listener: (this: Worker, ev: WorkerEventMap[K]) => any,
     options?: boolean | AddEventListenerOptions,
   ): void;
+
+  /** Adds an event listener for events whose type attribute value is type. */
   addEventListener(
     type: string,
     listener: EventListenerOrEventListenerObject,
     options?: boolean | AddEventListenerOptions,
   ): void;
+
+  /** Removes an event listener from the worker. */
   removeEventListener<K extends keyof WorkerEventMap>(
     type: K,
     listener: (this: Worker, ev: WorkerEventMap[K]) => any,
     options?: boolean | EventListenerOptions,
   ): void;
+
+  /** Removes an event listener from the worker. */
   removeEventListener(
     type: string,
     listener: EventListenerOrEventListenerObject,
     options?: boolean | EventListenerOptions,
   ): void;
+
+  /**
+   * Immediately terminates the worker.
+   * This does not offer the worker an opportunity to finish its operations;
+   * it is stopped at once.
+   *
+   * @example
+   * ```ts
+   * // Create a worker
+   * const worker = new Worker(new URL("./worker.ts", import.meta.url).href, {
+   *   type: "module"
+   * });
+   *
+   * // Some time later, when you're done with the worker
+   * worker.terminate();
+   * // The worker is now terminated and its resources are freed
+   * ```
+   */
   terminate(): void;
 }
 
-/** @category Workers */
+/**
+ * The Worker constructor creates a new Worker object that executes code in a separate thread.
+ *
+ * Workers can import ES modules when created with the `type: "module"` option.
+ *
+ * @category Workers
+ */
 declare var Worker: {
   readonly prototype: Worker;
+
+  /**
+   * Creates a new Worker object.
+   *
+   * @param specifier - URL or file path for the worker's script.
+   *                    When using a relative path, use `new URL("./worker.ts", import.meta.url)`
+   *                    to ensure the path is correctly resolved relative to the current module.
+   * @param options - Worker options including type and name
+   *
+   * @example Module worker with URL resolution
+   * ```ts
+   * // Create a worker that can use ES modules
+   * const worker = new Worker(
+   *   new URL("./workers/heavy_computation.ts", import.meta.url).href,
+   *   { type: "module", name: "computation-worker" }
+   * );
+   * ```
+   *
+   * @example Worker communication pattern
+   * ```ts
+   * // Main thread
+   * const worker = new Worker(new URL("./worker.ts", import.meta.url).href, { type: "module" });
+   *
+   * // Set up communication
+   * worker.postMessage({ action: "start", data: [1, 2, 3, 4, 5] });
+   *
+   * worker.onmessage = (e) => {
+   *   console.log("Worker result:", e.data);
+   *   if (e.data.status === "complete") {
+   *     worker.terminate();
+   *   }
+   * };
+   *
+   * // Worker file (worker.ts)
+   * // self.onmessage = (e) => {
+   * //   if (e.data.action === "start") {
+   * //     const result = e.data.data.reduce((a, b) => a + b, 0);
+   * //     self.postMessage({ status: "complete", result });
+   * //   }
+   * // };
+   * ```
+   */
   new (specifier: string | URL, options?: WorkerOptions): Worker;
 };
 
 /** @category Performance */
-declare type PerformanceEntryList = PerformanceEntry[];
+type PerformanceEntryList = PerformanceEntry[];
 
 /** @category Performance */
-declare interface Performance extends EventTarget {
+interface Performance extends EventTarget {
   /** Returns a timestamp representing the start of the performance measurement. */
   readonly timeOrigin: number;
 
@@ -571,6 +816,23 @@ declare interface Performance extends EventTarget {
 
   /** Removes stored timestamp with the associated name. */
   clearMeasures(measureName?: string): void;
+
+  /** Removes all performance entries with an entryType of "resource" from the
+   * performance timeline and sets the size of the performance resource data
+   * buffer to zero.
+   *
+   * Note: Deno does not currently track resource timings, so this method has
+   * no observable effect. It is provided for API compatibility.
+   */
+  clearResourceTimings(): void;
+
+  /** Sets the desired size of the browser's resource timing buffer which
+   * stores the "resource" performance entries.
+   *
+   * Note: Deno does not currently track resource timings, so this method has
+   * no observable effect. It is provided for API compatibility.
+   */
+  setResourceTimingBufferSize(maxSize: number): void;
 
   getEntries(): PerformanceEntryList;
   getEntriesByName(name: string, type?: string): PerformanceEntryList;
@@ -593,16 +855,12 @@ declare interface Performance extends EventTarget {
     endMark?: string,
   ): PerformanceMeasure;
 
-  /** Returns a current time from Deno's start in milliseconds.
-   *
-   * Use the permission flag `--allow-hrtime` to return a precise value.
+  /** Returns a current time from Deno's start in fractional milliseconds.
    *
    * ```ts
    * const t = performance.now();
    * console.log(`${t} ms since start!`);
    * ```
-   *
-   * @tags allow-hrtime
    */
   now(): number;
 
@@ -610,17 +868,28 @@ declare interface Performance extends EventTarget {
   toJSON(): any;
 }
 
-/** @category Performance */
-declare var Performance: {
+/** The constructor object for {@linkcode Performance}.
+ *
+ * The `Performance` instance is accessed via the global {@linkcode performance}
+ * property rather than constructed directly, so calling the constructor throws.
+ *
+ * @category Performance */
+declare var Performance: typeof globalThis extends
+  { document: any; Performance: infer T } ? T : {
   readonly prototype: Performance;
   new (): never;
 };
 
-/** @category Performance */
-declare var performance: Performance;
+/** The global {@linkcode Performance} instance, providing access to
+ * high-resolution timing via `performance.now()` and the user-timing marks and
+ * measures APIs.
+ *
+ * @category Performance */
+declare var performance: typeof globalThis extends
+  { document: any; performance: infer T } ? T : Performance;
 
 /** @category Performance */
-declare interface PerformanceMarkOptions {
+interface PerformanceMarkOptions {
   /** Metadata to be included in the mark. */
   detail?: any;
 
@@ -629,7 +898,7 @@ declare interface PerformanceMarkOptions {
 }
 
 /** @category Performance */
-declare interface PerformanceMeasureOptions {
+interface PerformanceMeasureOptions {
   /** Metadata to be included in the measure. */
   detail?: any;
 
@@ -651,7 +920,7 @@ declare interface PerformanceMeasureOptions {
  *
  * @category Performance
  */
-declare interface PerformanceEntry {
+interface PerformanceEntry {
   readonly duration: number;
   readonly entryType: string;
   readonly name: string;
@@ -666,7 +935,8 @@ declare interface PerformanceEntry {
  *
  * @category Performance
  */
-declare var PerformanceEntry: {
+declare var PerformanceEntry: typeof globalThis extends
+  { document: any; PerformanceEntry: infer T } ? T : {
   readonly prototype: PerformanceEntry;
   new (): never;
 };
@@ -678,7 +948,7 @@ declare var PerformanceEntry: {
  *
  * @category Performance
  */
-declare interface PerformanceMark extends PerformanceEntry {
+interface PerformanceMark extends PerformanceEntry {
   readonly detail: any;
   readonly entryType: "mark";
 }
@@ -690,7 +960,8 @@ declare interface PerformanceMark extends PerformanceEntry {
  *
  * @category Performance
  */
-declare var PerformanceMark: {
+declare var PerformanceMark: typeof globalThis extends
+  { document: any; PerformanceMark: infer T } ? T : {
   readonly prototype: PerformanceMark;
   new (name: string, options?: PerformanceMarkOptions): PerformanceMark;
 };
@@ -702,7 +973,7 @@ declare var PerformanceMark: {
  *
  * @category Performance
  */
-declare interface PerformanceMeasure extends PerformanceEntry {
+interface PerformanceMeasure extends PerformanceEntry {
   readonly detail: any;
   readonly entryType: "measure";
 }
@@ -714,33 +985,164 @@ declare interface PerformanceMeasure extends PerformanceEntry {
  *
  * @category Performance
  */
-declare var PerformanceMeasure: {
+declare var PerformanceMeasure: typeof globalThis extends
+  { document: any; PerformanceMeasure: infer T } ? T : {
   readonly prototype: PerformanceMeasure;
   new (): never;
 };
 
+/** The callback invoked when observed performance entries are recorded.
+ *
+ * @category Performance
+ */
+interface PerformanceObserverCallback {
+  (list: PerformanceObserverEntryList, observer: PerformanceObserver): void;
+}
+
+/** A list of {@linkcode PerformanceEntry} objects passed to a
+ * {@linkcode PerformanceObserver} callback.
+ *
+ * @category Performance
+ */
+interface PerformanceObserverEntryList {
+  getEntries(): PerformanceEntry[];
+  getEntriesByName(name: string, type?: string): PerformanceEntry[];
+  getEntriesByType(type: string): PerformanceEntry[];
+}
+
+/** A list of {@linkcode PerformanceEntry} objects passed to a
+ * {@linkcode PerformanceObserver} callback.
+ *
+ * @category Performance
+ */
+declare var PerformanceObserverEntryList: typeof globalThis extends
+  { document: any; PerformanceObserverEntryList: infer T } ? T : {
+  readonly prototype: PerformanceObserverEntryList;
+  new (): never;
+};
+
+/** Observes performance measurement events and is notified of new
+ * {@linkcode PerformanceEntry} objects as they are recorded.
+ *
+ * @category Performance
+ */
+interface PerformanceObserver {
+  disconnect(): void;
+  observe(
+    options?: { entryTypes?: string[]; type?: string; buffered?: boolean },
+  ): void;
+  takeRecords(): PerformanceEntry[];
+}
+
+/** Observes performance measurement events and is notified of new
+ * {@linkcode PerformanceEntry} objects as they are recorded.
+ *
+ * @category Performance
+ */
+declare var PerformanceObserver: typeof globalThis extends
+  { document: any; PerformanceObserver: infer T } ? T : {
+  readonly prototype: PerformanceObserver;
+  readonly supportedEntryTypes: readonly string[];
+  new (callback: PerformanceObserverCallback): PerformanceObserver;
+};
+
+/** Detailed network timing data for the fetching of a resource, an entry in
+ * the performance timeline with an `entryType` of `"resource"`.
+ *
+ * @category Performance
+ */
+interface PerformanceResourceTiming extends PerformanceEntry {
+  readonly entryType: "resource";
+}
+
+/** Detailed network timing data for the fetching of a resource, an entry in
+ * the performance timeline with an `entryType` of `"resource"`.
+ *
+ * @category Performance
+ */
+declare var PerformanceResourceTiming: typeof globalThis extends
+  { document: any; PerformanceResourceTiming: infer T } ? T : {
+  readonly prototype: PerformanceResourceTiming;
+  new (): never;
+};
+
 /** @category Events */
-declare interface CustomEventInit<T = any> extends EventInit {
+interface CustomEventInit<T = any> extends EventInit {
   detail?: T;
 }
 
 /** @category Events */
-declare interface CustomEvent<T = any> extends Event {
+interface CustomEvent<T = any> extends Event {
   /** Returns any custom data event was created with. Typically used for
    * synthetic events. */
   readonly detail: T;
 }
 
-/** @category Events */
-declare var CustomEvent: {
+/** The constructor object for {@linkcode CustomEvent}, used to construct an
+ * event that can carry arbitrary application-defined data via its `detail`
+ * property.
+ *
+ * @category Events */
+declare var CustomEvent: typeof globalThis extends
+  { document: any; CustomEvent: infer T } ? T : {
   readonly prototype: CustomEvent;
   new <T>(typeArg: string, eventInitDict?: CustomEventInit<T>): CustomEvent<T>;
 };
 
 /** @category Platform */
-declare interface ErrorConstructor {
+interface ErrorConstructor {
   /** See https://v8.dev/docs/stack-trace-api#stack-trace-collection-for-custom-exceptions. */
   captureStackTrace(error: Object, constructor?: Function): void;
+  stackTraceLimit: number;
   // TODO(nayeemrmn): Support `Error.prepareStackTrace()`. We currently use this
   // internally in a way that makes it unavailable for users.
+}
+
+/** The [Fetch API](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API)
+ * which also supports setting a {@linkcode Deno.HttpClient} which provides a
+ * way to connect via proxies and use custom TLS certificates.
+ *
+ * @tags allow-net, allow-read
+ * @category Fetch
+ */
+declare function fetch(
+  input: RequestInfo | URL,
+  init?: RequestInit & { client?: Deno.HttpClient },
+): Promise<Response>;
+
+/** @category Platform */
+interface Math {
+  /**
+   * Returns the sum of the given values using a more precise algorithm than a
+   * naive `+`-based reduction, avoiding the floating-point rounding errors
+   * that accumulate when summing many numbers.
+   *
+   * [MDN Reference](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Math/sumPrecise)
+   */
+  sumPrecise(values: Iterable<number>): number;
+}
+
+/** The `Intl` namespace groups the
+ * [ECMAScript Internationalization API](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl)
+ * constructors and functions.
+ *
+ * This declaration augments the standard `Intl` namespace with members that are
+ * not yet part of the bundled TypeScript library definitions.
+ *
+ * @category Intl */
+declare namespace Intl {
+  /** Augments the standard {@linkcode Intl.Locale} interface with members not
+   * yet present in the bundled TypeScript library definitions.
+   *
+   * @category Intl */
+  export interface Locale {
+    /**
+     * Returns the variant subtags of the locale as a single string, with
+     * subtags separated by `-`. Returns `undefined` if the locale has no
+     * variant subtags.
+     *
+     * [MDN Reference](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Locale/variants)
+     */
+    readonly variants: string | undefined;
+  }
 }

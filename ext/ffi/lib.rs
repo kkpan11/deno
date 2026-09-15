@@ -1,12 +1,8 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
-
-use deno_core::error::AnyError;
-use deno_core::OpState;
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 use std::mem::size_of;
 use std::os::raw::c_char;
 use std::os::raw::c_short;
-use std::path::Path;
 
 mod call;
 mod callback;
@@ -17,18 +13,27 @@ mod r#static;
 mod symbol;
 mod turbocall;
 
+pub use call::CallError;
 use call::op_ffi_call_nonblocking;
 use call::op_ffi_call_ptr;
 use call::op_ffi_call_ptr_nonblocking;
+pub use callback::CallbackError;
 use callback::op_ffi_unsafe_callback_close;
 use callback::op_ffi_unsafe_callback_create;
 use callback::op_ffi_unsafe_callback_ref;
-use dlfcn::op_ffi_load;
+pub use denort_helper::DenoRtNativeAddonLoader;
+pub use denort_helper::DenoRtNativeAddonLoaderRc;
+pub use dlfcn::DlfcnError;
 use dlfcn::ForeignFunction;
-use r#static::op_ffi_get_static;
+use dlfcn::op_ffi_load;
+pub use ir::IRError;
+pub use repr::ReprError;
 use repr::*;
+pub use r#static::StaticError;
+use r#static::op_ffi_get_static;
 use symbol::NativeType;
 use symbol::Symbol;
+use turbocall::op_ffi_get_turbocall_target;
 
 #[cfg(not(target_pointer_width = "64"))]
 compile_error!("platform not supported");
@@ -41,58 +46,47 @@ const _: () = {
 
 pub const UNSTABLE_FEATURE_NAME: &str = "ffi";
 
-fn check_unstable(state: &OpState, api_name: &str) {
-  // TODO(bartlomieju): replace with `state.feature_checker.check_or_exit`
-  // once we phase out `check_or_exit_with_legacy_fallback`
-  state
-    .feature_checker
-    .check_or_exit_with_legacy_fallback(UNSTABLE_FEATURE_NAME, api_name)
-}
-
-pub trait FfiPermissions {
-  fn check_partial(&mut self, path: Option<&Path>) -> Result<(), AnyError>;
-}
-
-impl FfiPermissions for deno_permissions::PermissionsContainer {
-  #[inline(always)]
-  fn check_partial(&mut self, path: Option<&Path>) -> Result<(), AnyError> {
-    deno_permissions::PermissionsContainer::check_ffi_partial(self, path)
-  }
-}
-
 deno_core::extension!(deno_ffi,
   deps = [ deno_web ],
-  parameters = [P: FfiPermissions],
   ops = [
-    op_ffi_load<P>,
+    op_ffi_load,
     op_ffi_get_static,
     op_ffi_call_nonblocking,
-    op_ffi_call_ptr<P>,
-    op_ffi_call_ptr_nonblocking<P>,
-    op_ffi_ptr_create<P>,
-    op_ffi_ptr_equals<P>,
-    op_ffi_ptr_of<P>,
-    op_ffi_ptr_of_exact<P>,
-    op_ffi_ptr_offset<P>,
-    op_ffi_ptr_value<P>,
-    op_ffi_get_buf<P>,
-    op_ffi_buf_copy_into<P>,
-    op_ffi_cstr_read<P>,
-    op_ffi_read_bool<P>,
-    op_ffi_read_u8<P>,
-    op_ffi_read_i8<P>,
-    op_ffi_read_u16<P>,
-    op_ffi_read_i16<P>,
-    op_ffi_read_u32<P>,
-    op_ffi_read_i32<P>,
-    op_ffi_read_u64<P>,
-    op_ffi_read_i64<P>,
-    op_ffi_read_f32<P>,
-    op_ffi_read_f64<P>,
-    op_ffi_read_ptr<P>,
-    op_ffi_unsafe_callback_create<P>,
+    op_ffi_call_ptr,
+    op_ffi_call_ptr_nonblocking,
+    op_ffi_ptr_create,
+    op_ffi_ptr_equals,
+    op_ffi_ptr_of,
+    op_ffi_ptr_of_exact,
+    op_ffi_ptr_offset,
+    op_ffi_ptr_value,
+    op_ffi_get_buf,
+    op_ffi_buf_copy_into,
+    op_ffi_cstr_read,
+    op_ffi_read_bool,
+    op_ffi_read_u8,
+    op_ffi_read_i8,
+    op_ffi_read_u16,
+    op_ffi_read_i16,
+    op_ffi_read_u32,
+    op_ffi_read_i32,
+    op_ffi_read_u64,
+    op_ffi_read_i64,
+    op_ffi_read_f32,
+    op_ffi_read_f64,
+    op_ffi_read_ptr,
+    op_ffi_unsafe_callback_create,
     op_ffi_unsafe_callback_close,
     op_ffi_unsafe_callback_ref,
+    op_ffi_get_turbocall_target,
   ],
-  esm = [ "00_ffi.js" ],
+  lazy_loaded_js = [ "00_ffi.js" ],
+  options = {
+    deno_rt_native_addon_loader: Option<DenoRtNativeAddonLoaderRc>,
+  },
+  state = |state, options| {
+    if let Some(loader) = options.deno_rt_native_addon_loader {
+      state.put(loader);
+    }
+  },
 );

@@ -1,26 +1,40 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use const_oid::AssociatedOid;
 use const_oid::ObjectIdentifier;
-use deno_core::error::custom_error;
-use deno_core::error::AnyError;
-use deno_core::op2;
-use deno_core::ToJsBuffer;
+use deno_core::ToV8;
+use deno_core::convert::Uint8Array;
 use elliptic_curve::sec1::ToEncodedPoint;
 use p256::pkcs8::DecodePrivateKey;
 use rsa::pkcs1::der::Decode;
-use rsa::pkcs8::der::asn1::UintRef;
 use rsa::pkcs8::der::Encode;
+use rsa::pkcs8::der::asn1::UintRef;
 use serde::Deserialize;
-use serde::Serialize;
-use spki::der::asn1;
-use spki::der::asn1::BitString;
 use spki::AlgorithmIdentifier;
 use spki::AlgorithmIdentifierOwned;
+use spki::der::asn1;
+use spki::der::asn1::BitString;
 
 use crate::shared::*;
+
+#[derive(Debug, thiserror::Error, deno_error::JsError)]
+pub enum ExportKeyError {
+  #[class(inherit)]
+  #[error(transparent)]
+  General(
+    #[from]
+    #[inherit]
+    SharedError,
+  ),
+  #[class(generic)]
+  #[error(transparent)]
+  Der(#[from] spki::der::Error),
+  #[class("DOMExceptionNotSupportedError")]
+  #[error("Unsupported named curve")]
+  UnsupportedNamedCurve,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,12 +74,12 @@ pub enum ExportKeyAlgorithm {
   Hmac {},
 }
 
-#[derive(Serialize)]
-#[serde(untagged)]
+#[derive(ToV8)]
+#[to_v8(untagged)]
 pub enum ExportKeyResult {
-  Raw(ToJsBuffer),
-  Pkcs8(ToJsBuffer),
-  Spki(ToJsBuffer),
+  Raw(Uint8Array),
+  Pkcs8(Uint8Array),
+  Spki(Uint8Array),
   JwkSecret {
     k: String,
   },
@@ -94,12 +108,13 @@ pub enum ExportKeyResult {
   },
 }
 
-#[op2]
-#[serde]
-pub fn op_crypto_export_key(
-  #[serde] opts: ExportKeyOptions,
-  #[serde] key_data: V8RawKeyData,
-) -> Result<ExportKeyResult, AnyError> {
+/// Rust-side entry that accepts an already-`RawKeyData` and dispatches
+/// per algorithm. Used by `getPublicKey` where the key material is owned
+/// by Rust (the `CryptoKeyHandle` lives in the cppgc heap).
+pub fn export_key_with_raw(
+  opts: ExportKeyOptions,
+  key_data: &crate::shared::RawKeyData,
+) -> Result<ExportKeyResult, ExportKeyError> {
   match opts.algorithm {
     ExportKeyAlgorithm::RsassaPkcs1v15 {}
     | ExportKeyAlgorithm::RsaPss {}
@@ -114,6 +129,16 @@ pub fn op_crypto_export_key(
   }
 }
 
+impl ExportKeyOptions {
+  /// Builder used by the Rust-native `getPublicKey` dispatcher.
+  pub fn new(format: ExportKeyFormat, algorithm: ExportKeyAlgorithm) -> Self {
+    Self { format, algorithm }
+  }
+}
+
+pub(crate) use export_key_ec as export_key_ec_for_subtle;
+pub(crate) use export_key_rsa as export_key_rsa_for_subtle;
+
 fn uint_to_b64(bytes: UintRef) -> String {
   BASE64_URL_SAFE_NO_PAD.encode(bytes.as_bytes())
 }
@@ -122,10 +147,10 @@ fn bytes_to_b64(bytes: &[u8]) -> String {
   BASE64_URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn export_key_rsa(
+pub(crate) fn export_key_rsa(
   format: ExportKeyFormat,
-  key_data: V8RawKeyData,
-) -> Result<ExportKeyResult, deno_core::anyhow::Error> {
+  key_data: &RawKeyData,
+) -> Result<ExportKeyResult, ExportKeyError> {
   match format {
     ExportKeyFormat::Spki => {
       let subject_public_key = &key_data.as_rsa_public_key()?;
@@ -181,12 +206,7 @@ fn export_key_rsa(
     ExportKeyFormat::JwkPublic => {
       let public_key = key_data.as_rsa_public_key()?;
       let public_key = rsa::pkcs1::RsaPublicKey::from_der(&public_key)
-        .map_err(|_| {
-          custom_error(
-            "DOMExceptionOperationError",
-            "failed to decode public key",
-          )
-        })?;
+        .map_err(|_| SharedError::FailedDecodePublicKey)?;
 
       Ok(ExportKeyResult::JwkPublicRsa {
         n: uint_to_b64(public_key.modulus),
@@ -196,12 +216,7 @@ fn export_key_rsa(
     ExportKeyFormat::JwkPrivate => {
       let private_key = key_data.as_rsa_private_key()?;
       let private_key = rsa::pkcs1::RsaPrivateKey::from_der(private_key)
-        .map_err(|_| {
-          custom_error(
-            "DOMExceptionOperationError",
-            "failed to decode private key",
-          )
-        })?;
+        .map_err(|_| SharedError::FailedDecodePrivateKey)?;
 
       Ok(ExportKeyResult::JwkPrivateRsa {
         n: uint_to_b64(private_key.modulus),
@@ -214,14 +229,14 @@ fn export_key_rsa(
         qi: uint_to_b64(private_key.coefficient),
       })
     }
-    _ => Err(unsupported_format()),
+    _ => Err(SharedError::UnsupportedFormat.into()),
   }
 }
 
-fn export_key_symmetric(
+pub(crate) fn export_key_symmetric(
   format: ExportKeyFormat,
-  key_data: V8RawKeyData,
-) -> Result<ExportKeyResult, deno_core::anyhow::Error> {
+  key_data: &RawKeyData,
+) -> Result<ExportKeyResult, ExportKeyError> {
   match format {
     ExportKeyFormat::JwkSecret => {
       let bytes = key_data.as_secret_key()?;
@@ -230,16 +245,16 @@ fn export_key_symmetric(
         k: bytes_to_b64(bytes),
       })
     }
-    _ => Err(unsupported_format()),
+    _ => Err(SharedError::UnsupportedFormat.into()),
   }
 }
 
-fn export_key_ec(
+pub(crate) fn export_key_ec(
   format: ExportKeyFormat,
-  key_data: V8RawKeyData,
+  key_data: &RawKeyData,
   algorithm: ExportKeyAlgorithm,
   named_curve: EcNamedCurve,
-) -> Result<ExportKeyResult, deno_core::anyhow::Error> {
+) -> Result<ExportKeyResult, ExportKeyError> {
   match format {
     ExportKeyFormat::Raw => {
       let subject_public_key = match named_curve {
@@ -254,7 +269,9 @@ fn export_key_ec(
           point.as_ref().to_vec()
         }
         EcNamedCurve::P521 => {
-          return Err(data_error("Unsupported named curve"))
+          let point = key_data.as_ec_public_key_p521()?;
+
+          point.as_ref().to_vec()
         }
       };
       Ok(ExportKeyResult::Raw(subject_public_key.into()))
@@ -272,7 +289,9 @@ fn export_key_ec(
           point.as_ref().to_vec()
         }
         EcNamedCurve::P521 => {
-          return Err(data_error("Unsupported named curve"))
+          let point = key_data.as_ec_public_key_p521()?;
+
+          point.as_ref().to_vec()
         }
       };
 
@@ -285,9 +304,10 @@ fn export_key_ec(
           oid: elliptic_curve::ALGORITHM_OID,
           parameters: Some((&p384::NistP384::OID).into()),
         },
-        EcNamedCurve::P521 => {
-          return Err(data_error("Unsupported named curve"))
-        }
+        EcNamedCurve::P521 => AlgorithmIdentifierOwned {
+          oid: elliptic_curve::ALGORITHM_OID,
+          parameters: Some((&p521::NistP521::OID).into()),
+        },
       };
 
       let alg_id = match algorithm {
@@ -327,10 +347,7 @@ fn export_key_ec(
             y: bytes_to_b64(y),
           })
         } else {
-          Err(custom_error(
-            "DOMExceptionOperationError",
-            "failed to decode public key",
-          ))
+          Err(SharedError::FailedDecodePublicKey.into())
         }
       }
       EcNamedCurve::P384 => {
@@ -345,26 +362,32 @@ fn export_key_ec(
             y: bytes_to_b64(y),
           })
         } else {
-          Err(custom_error(
-            "DOMExceptionOperationError",
-            "failed to decode public key",
-          ))
+          Err(SharedError::FailedDecodePublicKey.into())
         }
       }
-      EcNamedCurve::P521 => Err(data_error("Unsupported named curve")),
+      EcNamedCurve::P521 => {
+        let point = key_data.as_ec_public_key_p521()?;
+        let coords = point.coordinates();
+
+        if let p521::elliptic_curve::sec1::Coordinates::Uncompressed { x, y } =
+          coords
+        {
+          Ok(ExportKeyResult::JwkPublicEc {
+            x: bytes_to_b64(x),
+            y: bytes_to_b64(y),
+          })
+        } else {
+          Err(SharedError::FailedDecodePublicKey.into())
+        }
+      }
     },
     ExportKeyFormat::JwkPrivate => {
       let private_key = key_data.as_ec_private_key()?;
 
       match named_curve {
         EcNamedCurve::P256 => {
-          let ec_key =
-            p256::SecretKey::from_pkcs8_der(private_key).map_err(|_| {
-              custom_error(
-                "DOMExceptionOperationError",
-                "failed to decode private key",
-              )
-            })?;
+          let ec_key = p256::SecretKey::from_pkcs8_der(private_key)
+            .map_err(|_| SharedError::FailedDecodePrivateKey)?;
 
           let point = ec_key.public_key().to_encoded_point(false);
           if let elliptic_curve::sec1::Coordinates::Uncompressed { x, y } =
@@ -376,18 +399,13 @@ fn export_key_ec(
               d: bytes_to_b64(&ec_key.to_bytes()),
             })
           } else {
-            Err(data_error("expected valid public EC key"))
+            Err(SharedError::ExpectedValidPublicECKey.into())
           }
         }
 
         EcNamedCurve::P384 => {
-          let ec_key =
-            p384::SecretKey::from_pkcs8_der(private_key).map_err(|_| {
-              custom_error(
-                "DOMExceptionOperationError",
-                "failed to decode private key",
-              )
-            })?;
+          let ec_key = p384::SecretKey::from_pkcs8_der(private_key)
+            .map_err(|_| SharedError::FailedDecodePrivateKey)?;
 
           let point = ec_key.public_key().to_encoded_point(false);
           if let elliptic_curve::sec1::Coordinates::Uncompressed { x, y } =
@@ -399,12 +417,28 @@ fn export_key_ec(
               d: bytes_to_b64(&ec_key.to_bytes()),
             })
           } else {
-            Err(data_error("expected valid public EC key"))
+            Err(SharedError::ExpectedValidPublicECKey.into())
           }
         }
-        _ => Err(not_supported_error("Unsupported namedCurve")),
+        EcNamedCurve::P521 => {
+          let ec_key = p521::SecretKey::from_pkcs8_der(private_key)
+            .map_err(|_| SharedError::FailedDecodePrivateKey)?;
+
+          let point = ec_key.public_key().to_encoded_point(false);
+          if let elliptic_curve::sec1::Coordinates::Uncompressed { x, y } =
+            point.coordinates()
+          {
+            Ok(ExportKeyResult::JwkPrivateEc {
+              x: bytes_to_b64(x),
+              y: bytes_to_b64(y),
+              d: bytes_to_b64(&ec_key.to_bytes()),
+            })
+          } else {
+            Err(SharedError::ExpectedValidPublicECKey.into())
+          }
+        }
       }
     }
-    ExportKeyFormat::JwkSecret => Err(unsupported_format()),
+    ExportKeyFormat::JwkSecret => Err(SharedError::UnsupportedFormat.into()),
   }
 }

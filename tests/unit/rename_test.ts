@@ -1,4 +1,4 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 import {
   assert,
   assertEquals,
@@ -70,7 +70,7 @@ Deno.test(
       const oldpath = "/oldbaddir";
       const newpath = "/newbaddir";
       Deno.renameSync(oldpath, newpath);
-    }, Deno.errors.PermissionDenied);
+    }, Deno.errors.NotCapable);
   },
 );
 
@@ -81,7 +81,7 @@ Deno.test(
       const oldpath = "/oldbaddir";
       const newpath = "/newbaddir";
       Deno.renameSync(oldpath, newpath);
-    }, Deno.errors.PermissionDenied);
+    }, Deno.errors.NotCapable);
   },
 );
 
@@ -249,26 +249,12 @@ Deno.test(
       () => {
         Deno.renameSync(olddir, fulldir);
       },
-      Deno.errors.PermissionDenied,
-      "Access is denied",
-    );
-    assertThrows(
-      () => {
-        Deno.renameSync(olddir, emptydir);
-      },
-      Deno.errors.PermissionDenied,
-      "Access is denied",
-    );
-    assertThrows(
-      () => {
-        Deno.renameSync(olddir, emptydir);
-      },
       Error,
-      `rename '${olddir}' -> '${emptydir}'`,
+      "The directory is not empty",
     );
 
     // should succeed on Windows
-    Deno.renameSync(olddir, file);
-    assertDirectory(file);
+    Deno.renameSync(olddir, emptydir);
+    assertDirectory(emptydir);
   },
 );

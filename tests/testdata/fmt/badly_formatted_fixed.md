@@ -48,11 +48,22 @@ function foo(): number {
 ```
 
 ```html
-<div class="container">content</div>
+<div class=container> content </div>
 ```
 
 ```svelte
-<script lang="ts">
-  let a: number;
+<script lang=ts>
+let a: number;
 </script>
+```
+
+```sql
+SELECT *, biz, buz
+FROM baz;
+```
+
+```sql
+-- deno-fmt-ignore-file
+  seLect * , biz, buz
+from baz;
 ```

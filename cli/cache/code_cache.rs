@@ -1,4 +1,4 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 use deno_ast::ModuleSpecifier;
 use deno_core::error::AnyError;
@@ -80,10 +80,6 @@ impl CodeCache {
       data,
     ));
   }
-
-  pub fn remove_code_cache(&self, specifier: &str) {
-    Self::ensure_ok(self.inner.remove_code_cache(specifier))
-  }
 }
 
 impl code_cache::CodeCache for CodeCache {
@@ -162,15 +158,6 @@ impl CodeCacheInner {
     self.conn.execute(sql, params)?;
     Ok(())
   }
-
-  pub fn remove_code_cache(&self, specifier: &str) -> Result<(), AnyError> {
-    let sql = "
-      DELETE FROM codecache
-      WHERE specifier=$1;";
-    let params = params![specifier];
-    self.conn.execute(sql, params)?;
-    Ok(())
-  }
 }
 
 fn serialize_code_cache_type(
@@ -191,14 +178,16 @@ mod test {
     let conn = CacheDB::in_memory(&CODE_CACHE_DB, "1.0.0");
     let cache = CodeCacheInner::new(conn);
 
-    assert!(cache
-      .get_sync(
-        "file:///foo/bar.js",
-        code_cache::CodeCacheType::EsModule,
-        CacheDBHash::new(1),
-      )
-      .unwrap()
-      .is_none());
+    assert!(
+      cache
+        .get_sync(
+          "file:///foo/bar.js",
+          code_cache::CodeCacheType::EsModule,
+          CacheDBHash::new(1),
+        )
+        .unwrap()
+        .is_none()
+    );
     let data_esm = vec![1, 2, 3];
     cache
       .set_sync(
@@ -220,14 +209,16 @@ mod test {
       data_esm
     );
 
-    assert!(cache
-      .get_sync(
-        "file:///foo/bar.js",
-        code_cache::CodeCacheType::Script,
-        CacheDBHash::new(1),
-      )
-      .unwrap()
-      .is_none());
+    assert!(
+      cache
+        .get_sync(
+          "file:///foo/bar.js",
+          code_cache::CodeCacheType::Script,
+          CacheDBHash::new(1),
+        )
+        .unwrap()
+        .is_none()
+    );
     let data_script = vec![4, 5, 6];
     cache
       .set_sync(

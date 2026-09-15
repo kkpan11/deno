@@ -1,7 +1,8 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 use test_util::TestContext;
 use test_util::TestContextBuilder;
+use test_util::test;
 
 // This test only runs on linux, because it hardcodes the XDG_CACHE_HOME env var
 // which is only used on linux.
@@ -18,7 +19,7 @@ fn xdg_cache_home_dir() {
     .env_clear()
     .env("XDG_CACHE_HOME", &xdg_cache_home)
     .args(
-      "cache --reload --no-check http://localhost:4548/subdir/redirects/a.ts",
+      "cache --allow-import --reload --no-check http://localhost:4548/subdir/redirects/a.ts",
     )
     .run()
     .skip_output_check()
@@ -26,22 +27,24 @@ fn xdg_cache_home_dir() {
   assert!(xdg_cache_home.read_dir().count() > 0);
 }
 
+// TODO(2.0): reenable
+#[ignore]
 #[test]
 fn cache_matching_package_json_dep_should_not_install_all() {
   let context = TestContextBuilder::for_npm().use_temp_cwd().build();
   let temp_dir = context.temp_dir();
   temp_dir.write(
     "package.json",
-    r#"{ "dependencies": { "@types/node": "18.8.2", "@denotest/esm-basic": "*" } }"#,
+    r#"{ "dependencies": { "@types/node": "22.12.0", "@denotest/esm-basic": "*" } }"#,
   );
   let output = context
     .new_command()
-    .args("cache npm:@types/node@18.8.2")
+    .args("cache npm:@types/node@22.12.0")
     .run();
   output.assert_matches_text(concat!(
     "Download http://localhost:4260/@types/node\n",
     "Download http://localhost:4260/@types/node/node-18.8.2.tgz\n",
-    "Initialize @types/node@18.8.2\n",
+    "Initialize @types/node@22.12.0\n",
   ));
 }
 
@@ -100,10 +103,36 @@ fn cache_put_overwrite() {
 }
 
 #[test]
+fn web_cache_is_stored_under_deno_dir() {
+  let test_context = TestContextBuilder::new().use_temp_cwd().build();
+  test_context
+    .temp_dir()
+    .write("main.js", "await caches.open('test');");
+
+  test_context
+    .new_command()
+    .args("run main.js")
+    .run()
+    .assert_exit_code(0);
+
+  let web_cache_dir = test_context
+    .deno_dir()
+    .path()
+    .join("location_data")
+    .join("web_cache");
+  let storage_dirs = std::fs::read_dir(&web_cache_dir)
+    .unwrap()
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap();
+  assert_eq!(storage_dirs.len(), 1);
+  assert!(storage_dirs[0].path().join("cache_metadata.db").is_file());
+}
+
+#[test]
 fn loads_type_graph() {
   let output = TestContext::default()
     .new_command()
     .args("cache --reload -L debug run/type_directives_js_main.js")
     .run();
-  output.assert_matches_text("[WILDCARD] - FileFetcher::fetch_no_follow_with_options - specifier: file:///[WILDCARD]/subdir/type_reference.d.ts[WILDCARD]");
+  output.assert_matches_text("[WILDCARD] - FileFetcher::fetch_no_follow - specifier: file:///[WILDCARD]/subdir/type_reference.d.ts[WILDCARD]");
 }

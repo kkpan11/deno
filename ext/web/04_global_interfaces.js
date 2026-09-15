@@ -1,22 +1,23 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 // @ts-check
 /// <reference path="../../core/internal.d.ts" />
 
-import { primordials } from "ext:core/mod.js";
+(function () {
+const { core, primordials } = __bootstrap;
 const {
   Symbol,
   SymbolToStringTag,
   TypeError,
 } = primordials;
-import { EventTarget } from "./02_event.js";
+const { EventTarget } = core.loadExtScript("ext:deno_web/02_event.js");
 
 const illegalConstructorKey = Symbol("illegalConstructorKey");
 
 class Window extends EventTarget {
   constructor(key = null) {
     if (key !== illegalConstructorKey) {
-      throw new TypeError("Illegal constructor.");
+      throw new TypeError("Illegal constructor");
     }
     super();
   }
@@ -29,7 +30,7 @@ class Window extends EventTarget {
 class WorkerGlobalScope extends EventTarget {
   constructor(key = null) {
     if (key != illegalConstructorKey) {
-      throw new TypeError("Illegal constructor.");
+      throw new TypeError("Illegal constructor");
     }
     super();
   }
@@ -42,7 +43,7 @@ class WorkerGlobalScope extends EventTarget {
 class DedicatedWorkerGlobalScope extends WorkerGlobalScope {
   constructor(key = null) {
     if (key != illegalConstructorKey) {
-      throw new TypeError("Illegal constructor.");
+      throw new TypeError("Illegal constructor");
     }
     super();
   }
@@ -53,6 +54,7 @@ class DedicatedWorkerGlobalScope extends WorkerGlobalScope {
 }
 
 const dedicatedWorkerGlobalScopeConstructorDescriptor = {
+  __proto__: null,
   configurable: true,
   enumerable: false,
   value: DedicatedWorkerGlobalScope,
@@ -60,6 +62,7 @@ const dedicatedWorkerGlobalScopeConstructorDescriptor = {
 };
 
 const windowConstructorDescriptor = {
+  __proto__: null,
   configurable: true,
   enumerable: false,
   value: Window,
@@ -67,13 +70,14 @@ const windowConstructorDescriptor = {
 };
 
 const workerGlobalScopeConstructorDescriptor = {
+  __proto__: null,
   configurable: true,
   enumerable: false,
   value: WorkerGlobalScope,
   writable: true,
 };
 
-export {
+return {
   DedicatedWorkerGlobalScope,
   dedicatedWorkerGlobalScopeConstructorDescriptor,
   Window,
@@ -81,3 +85,4 @@ export {
   WorkerGlobalScope,
   workerGlobalScopeConstructorDescriptor,
 };
+})();

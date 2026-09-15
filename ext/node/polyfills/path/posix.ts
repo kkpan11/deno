@@ -1,8 +1,9 @@
 // Copyright the Browserify authors. MIT License.
 // Ported from https://github.com/browserify/path-browserify/
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
-import path from "ext:deno_node/path/mod.ts";
+import { core } from "ext:core/mod.js";
+const mod = core.loadExtScript("ext:deno_node/path/mod.ts");
 
 export const {
   basename,
@@ -18,6 +19,9 @@ export const {
   resolve,
   sep,
   toNamespacedPath,
-} = path.posix;
+  _makeLong,
+} = mod.posix;
 
-export default path.posix;
+export const posix = mod.posix;
+export const win32 = mod.win32;
+export default mod.posix;

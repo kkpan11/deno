@@ -1,37 +1,54 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
+
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use deno_core::anyhow::anyhow;
 use deno_core::error::AnyError;
 use deno_core::serde_json;
-use deno_runtime::deno_permissions::PermissionsContainer;
-use deno_semver::package::PackageNv;
+use deno_npm::resolution::NpmVersionResolver;
+use deno_npmrc::NpmRc;
+use deno_npmrc::NpmRegistryUrl;
 use deno_semver::Version;
+use deno_semver::package::PackageNv;
+use once_cell::sync::Lazy;
 use serde::Deserialize;
-use std::sync::Arc;
-
-use crate::args::npm_registry_url;
-use crate::file_fetcher::FileFetcher;
-use crate::npm::NpmFetchResolver;
 
 use super::search::PackageSearchApi;
+use crate::file_fetcher::CliFileFetcher;
+use crate::file_fetcher::TextDecodedFile;
+use crate::npm::NpmFetchResolver;
+use crate::sys::CliSys;
 
 #[derive(Debug)]
 pub struct CliNpmSearchApi {
-  file_fetcher: Arc<FileFetcher>,
+  file_fetcher: Arc<CliFileFetcher>,
   resolver: NpmFetchResolver,
   search_cache: DashMap<String, Arc<Vec<String>>>,
   versions_cache: DashMap<String, Arc<Vec<Version>>>,
+  exports_cache: DashMap<PackageNv, Arc<Vec<String>>>,
 }
 
 impl CliNpmSearchApi {
-  pub fn new(file_fetcher: Arc<FileFetcher>) -> Self {
-    let resolver = NpmFetchResolver::new(file_fetcher.clone());
+  pub fn new(
+    file_fetcher: Arc<CliFileFetcher>,
+    npm_version_resolver: Arc<NpmVersionResolver>,
+  ) -> Self {
+    // The LSP is the only consumer of npm `exports` subpath keys (import
+    // specifier completion), so it opts into deserializing them; every other
+    // command discards them to avoid retaining them for the whole process.
+    let resolver = NpmFetchResolver::new(
+      file_fetcher.clone(),
+      Arc::new(NpmRc::default().as_resolved(npm_registry_url()).unwrap()),
+      npm_version_resolver,
+    )
+    .with_export_keys();
     Self {
       file_fetcher,
       resolver,
       search_cache: Default::default(),
       versions_cache: Default::default(),
+      exports_cache: Default::default(),
     }
   }
 
@@ -39,25 +56,24 @@ impl CliNpmSearchApi {
     self.file_fetcher.clear_memory_files();
     self.search_cache.clear();
     self.versions_cache.clear();
+    self.exports_cache.clear();
   }
 }
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl PackageSearchApi for CliNpmSearchApi {
   async fn search(&self, query: &str) -> Result<Arc<Vec<String>>, AnyError> {
     if let Some(names) = self.search_cache.get(query) {
       return Ok(names.clone());
     }
-    let mut search_url = npm_registry_url().join("-/v1/search")?;
+    let mut search_url = npm_registry_url().url.join("-/v1/search")?;
     search_url
       .query_pairs_mut()
       .append_pair("text", &format!("{} boost-exact:false", query));
     let file_fetcher = self.file_fetcher.clone();
     let file = deno_core::unsync::spawn(async move {
-      file_fetcher
-        .fetch(&search_url, &PermissionsContainer::allow_all())
-        .await?
-        .into_text_decoded()
+      let file = file_fetcher.fetch_bypass_permissions(&search_url).await?;
+      TextDecodedFile::decode(file)
     })
     .await??;
     let names = Arc::new(parse_npm_search_response(&file.source)?);
@@ -74,7 +90,12 @@ impl PackageSearchApi for CliNpmSearchApi {
       .package_info(name)
       .await
       .ok_or_else(|| anyhow!("npm package info not found: {}", name))?;
-    let mut versions = info.versions.keys().cloned().collect::<Vec<_>>();
+    let mut versions = self
+      .resolver
+      .applicable_version_infos(&info)
+      .map(|vi| &vi.version)
+      .cloned()
+      .collect::<Vec<_>>();
     versions.sort();
     versions.reverse();
     let versions = Arc::new(versions);
@@ -86,9 +107,29 @@ impl PackageSearchApi for CliNpmSearchApi {
 
   async fn exports(
     &self,
-    _nv: &PackageNv,
+    nv: &PackageNv,
   ) -> Result<Arc<Vec<String>>, AnyError> {
-    Ok(Default::default())
+    if let Some(exports) = self.exports_cache.get(nv) {
+      return Ok(exports.clone());
+    }
+    let info = self
+      .resolver
+      .package_info(nv.name.as_str())
+      .await
+      .ok_or_else(|| anyhow!("npm package info not found: {}", nv.name))?;
+    let version_info = info
+      .versions
+      .get(&nv.version)
+      .ok_or_else(|| anyhow!("npm package version not found: {}", nv))?;
+    let mut exports = version_info
+      .exports
+      .as_ref()
+      .map(|exports| exports.as_slice().to_vec())
+      .unwrap_or_default();
+    exports.sort();
+    let exports = Arc::new(exports);
+    self.exports_cache.insert(nv.clone(), exports.clone());
+    Ok(exports)
   }
 }
 
@@ -107,6 +148,14 @@ fn parse_npm_search_response(source: &str) -> Result<Vec<String>, AnyError> {
   }
   let objects = serde_json::from_str::<Response>(source)?.objects;
   Ok(objects.into_iter().map(|o| o.package.name).collect())
+}
+
+// this is buried here because generally you want to use the ResolvedNpmRc instead of this.
+fn npm_registry_url() -> &'static NpmRegistryUrl {
+  static NPM_REGISTRY_DEFAULT_URL: Lazy<NpmRegistryUrl> =
+    Lazy::new(|| NpmRegistryUrl::for_npm(&CliSys::default()));
+
+  &NPM_REGISTRY_DEFAULT_URL
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 // deno-lint-ignore-file no-console
 
@@ -17,9 +17,7 @@ if (import.meta.main) {
         "--config",
         Deno.realPathSync("../config/deno.json"),
         "--no-lock",
-        "--allow-read",
-        "--allow-run",
-        "--allow-ffi",
+        "-A",
         "--unstable-ffi",
         import.meta.url,
       ],

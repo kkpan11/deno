@@ -1,4 +1,4 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 import { fork } from "node:child_process";
 import process from "node:process";
@@ -29,6 +29,7 @@ if (process.env.CHILD) {
       const start = performance.now();
 
       const options = {
+        __proto__: null,
         "stdio": ["inherit", "inherit", "inherit", "ipc"],
         "env": { "CHILD": len.toString() },
       };

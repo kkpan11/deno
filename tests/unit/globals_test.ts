@@ -1,12 +1,7 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
-// deno-lint-ignore-file no-window-prefix no-window
-import {
-  assert,
-  assertEquals,
-  assertRejects,
-  assertThrows,
-} from "./test_util.ts";
+import { join } from "@std/path";
+import { assert, assertEquals, assertRejects } from "./test_util.ts";
 
 Deno.test(function globalThisExists() {
   assert(globalThis != null);
@@ -19,32 +14,16 @@ Deno.test(function noInternalGlobals() {
   }
 });
 
-Deno.test(function windowExists() {
-  assert(window != null);
-});
-
 Deno.test(function selfExists() {
   assert(self != null);
 });
 
-Deno.test(function windowWindowExists() {
-  assert(window.window === window);
-});
-
-Deno.test(function windowSelfExists() {
-  assert(window.self === window);
-});
-
-Deno.test(function globalThisEqualsWindow() {
-  assert(globalThis === window);
+Deno.test(function globalThisWindowEqualsUndefined() {
+  assert(globalThis.window === undefined);
 });
 
 Deno.test(function globalThisEqualsSelf() {
   assert(globalThis === self);
-});
-
-Deno.test(function globalThisInstanceofWindow() {
-  assert(globalThis instanceof Window);
 });
 
 Deno.test(function globalThisConstructorLength() {
@@ -65,12 +44,40 @@ Deno.test(function DenoNamespaceExists() {
   assert(Deno != null);
 });
 
-Deno.test(function DenoNamespaceEqualsWindowDeno() {
-  assert(Deno === window.Deno);
-});
-
 Deno.test(function DenoNamespaceIsNotFrozen() {
   assert(!Object.isFrozen(Deno));
+});
+
+Deno.test(function DenoNamespaceLazyPropertiesAreWritable() {
+  const deno = Deno as unknown as Record<string, unknown>;
+  const lazyProperties = [
+    "serve",
+    "serveHttp",
+    "upgradeWebSocket",
+    "Command",
+  ];
+
+  for (const name of lazyProperties) {
+    const descriptor = Object.getOwnPropertyDescriptor(Deno, name);
+    assert(descriptor);
+    try {
+      const original = deno[name];
+      assert(typeof original === "function");
+      const replacement = new Proxy(original, {});
+
+      deno[name] = replacement;
+
+      assertEquals(deno[name], replacement);
+      const replacementDescriptor = Object.getOwnPropertyDescriptor(Deno, name);
+      assert(replacementDescriptor);
+      assertEquals(replacementDescriptor.value, replacement);
+      assert(replacementDescriptor.writable);
+      assert(replacementDescriptor.enumerable);
+      assert(replacementDescriptor.configurable);
+    } finally {
+      Object.defineProperty(Deno, name, descriptor);
+    }
+  }
 });
 
 Deno.test(function webAssemblyExists() {
@@ -119,7 +126,7 @@ Deno.test(async function windowQueueMicrotask() {
       res();
     };
   });
-  window.queueMicrotask(resolve1!);
+  globalThis.queueMicrotask(resolve1!);
   setTimeout(resolve2!, 0);
   await p1;
   await p2;
@@ -138,12 +145,9 @@ Deno.test(function webApiGlobalThis() {
 Deno.test(function windowNameIsDefined() {
   assertEquals(typeof globalThis.name, "string");
   assertEquals(name, "");
-  assertEquals(window.name, name);
   name = "foobar";
-  assertEquals(window.name, "foobar");
   assertEquals(name, "foobar");
   name = "";
-  assertEquals(window.name, "");
   assertEquals(name, "");
 });
 
@@ -164,10 +168,10 @@ Deno.test(async function arrayFromAsync() {
   // Taken from https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/fromAsync#examples
   // Thank you.
   const asyncIterable = (async function* () {
-    for (let i = 0; i < 5; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10 * i));
-      yield i;
-    }
+  for (let i = 0; i < 5; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10 * i));
+    yield i;
+  }
   })();
 
   const a = await Array.fromAsync(asyncIterable);
@@ -230,9 +234,51 @@ Deno.test(function mapGroupBy() {
   }]);
 });
 
-Deno.test(function nodeGlobalsRaise() {
-  assertThrows(() => {
-    // @ts-ignore yes that's the point
-    Buffer;
-  }, ReferenceError);
+// Regression test for https://github.com/denoland/deno/issues/30012
+Deno.test(function globalGlobalIsWritable() {
+  // @ts-ignore the typings here are wrong
+  globalThis.global = "can write to `global`";
+  // @ts-ignore the typings here are wrong
+  globalThis.global = globalThis;
+});
+
+Deno.test(async function overwriteEventOnExternalModuleShouldNotCrash() {
+  const tmpDir = await Deno.makeTempDir();
+
+  const externalModulePath = join(tmpDir, "overwrite_event.ts");
+  const externalModuleContent =
+    `globalThis.Event = class {}; export default {};`;
+  await Deno.writeTextFile(externalModulePath, externalModuleContent);
+
+  const entrypointPath = join(tmpDir, "index.ts");
+  const entrypointContent = `import("./overwrite_event.ts");`;
+  await Deno.writeTextFile(entrypointPath, entrypointContent);
+
+  const command = new Deno.Command(Deno.execPath(), {
+    args: ["run", "-A", entrypointPath],
+    stdout: "null",
+    stderr: "null",
+  });
+  const child = command.spawn();
+
+  const status = await child.status;
+  assert(status.success);
+  await Deno.remove(tmpDir, { recursive: true });
+});
+
+Deno.test(function navigatorPlatformExists() {
+  switch (Deno.build.os) {
+    case "linux": {
+      assertEquals(navigator.platform, `Linux ${Deno.build.arch}`);
+      break;
+    }
+    case "darwin": {
+      assertEquals(navigator.platform, "MacIntel");
+      break;
+    }
+    case "windows": {
+      assertEquals(navigator.platform, "Win32");
+      break;
+    }
+  }
 });

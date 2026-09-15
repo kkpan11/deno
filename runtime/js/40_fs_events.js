@@ -1,7 +1,8 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
-import { core, internals, primordials } from "ext:core/mod.js";
-import { op_fs_events_open, op_fs_events_poll } from "ext:core/ops";
+(function () {
+const { core, primordials } = __bootstrap;
+const { op_fs_events_open, op_fs_events_poll } = core.ops;
 const {
   BadResourcePrototype,
   InterruptedPrototype,
@@ -11,33 +12,22 @@ const {
   ObjectPrototypeIsPrototypeOf,
   PromiseResolve,
   SymbolAsyncIterator,
-  ObjectDefineProperty,
+  SymbolDispose,
 } = primordials;
-
-import { SymbolDispose } from "ext:deno_web/00_infra.js";
 
 class FsWatcher {
   #rid = 0;
   #promise;
+  #closed = false;
 
   constructor(paths, options) {
-    if (internals.future) {
-      ObjectDefineProperty(this, "rid", {
-        enumerable: false,
-        value: undefined,
-      });
-    }
-    const { recursive } = options;
-    this.#rid = op_fs_events_open({ recursive, paths });
-  }
-
-  get rid() {
-    internals.warnOnDeprecatedApi(
-      "Deno.FsWatcher.rid",
-      new Error().stack,
-      "Use `Deno.FsWatcher` instance methods instead.",
-    );
-    return this.#rid;
+    // `recursive` defaults to true even when other options are provided, so
+    // `watchFs(path, { ignore })` keeps watching subdirectories.
+    const { recursive = true, ignore } = options;
+    const ignorePaths = ignore === undefined
+      ? []
+      : (ArrayIsArray(ignore) ? ignore : [ignore]);
+    this.#rid = op_fs_events_open(recursive, ignorePaths, paths);
   }
 
   unref() {
@@ -49,12 +39,16 @@ class FsWatcher {
   }
 
   async next() {
+    if (this.#closed) {
+      return { value: undefined, done: true };
+    }
     try {
       this.#promise = op_fs_events_poll(this.#rid);
       const value = await this.#promise;
       return value ? { value, done: false } : { value: undefined, done: true };
     } catch (error) {
       if (ObjectPrototypeIsPrototypeOf(BadResourcePrototype, error)) {
+        this.#closed = true;
         return { value: undefined, done: true };
       } else if (
         ObjectPrototypeIsPrototypeOf(InterruptedPrototype, error)
@@ -65,16 +59,13 @@ class FsWatcher {
     }
   }
 
-  // TODO(kt3k): This is deprecated. Will be removed in v2.0.
-  // See https://github.com/denoland/deno/issues/10577 for details
   return(value) {
-    internals.warnOnDeprecatedApi("Deno.FsWatcher.return()", new Error().stack);
-    core.close(this.#rid);
+    this.#close();
     return PromiseResolve({ value, done: true });
   }
 
   close() {
-    core.close(this.#rid);
+    this.#close();
   }
 
   [SymbolAsyncIterator]() {
@@ -82,15 +73,23 @@ class FsWatcher {
   }
 
   [SymbolDispose]() {
-    core.tryClose(this.#rid);
+    this.#close();
+  }
+
+  #close() {
+    if (!this.#closed) {
+      this.#closed = true;
+      core.tryClose(this.#rid);
+    }
   }
 }
 
 function watchFs(
   paths,
-  options = { recursive: true },
+  options = { __proto__: null, recursive: true },
 ) {
   return new FsWatcher(ArrayIsArray(paths) ? paths : [paths], options);
 }
 
-export { watchFs };
+return { watchFs };
+})();

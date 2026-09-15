@@ -1,4 +1,4 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 
 use std::sync::Arc;
 
@@ -8,16 +8,15 @@ use deno_core::anyhow::bail;
 use deno_core::error::AnyError;
 use deno_core::serde_json::json;
 use deno_core::unsync::spawn;
+use lsp_types::Uri;
 use tower_lsp::lsp_types as lsp;
 use tower_lsp::lsp_types::ConfigurationItem;
 
-use crate::lsp::repl::get_repl_workspace_settings;
-
-use super::config::WorkspaceSettings;
 use super::config::SETTINGS_SECTION;
+use super::config::WorkspaceSettings;
 use super::lsp_custom;
 use super::testing::lsp_custom as testing_lsp_custom;
-use super::urls::LspClientUrl;
+use crate::lsp::logging::lsp_warn;
 
 #[derive(Debug)]
 pub enum TestingNotification {
@@ -40,10 +39,6 @@ impl Client {
     Self(Arc::new(TowerClient(client)))
   }
 
-  pub fn new_for_repl() -> Self {
-    Self(Arc::new(ReplClient))
-  }
-
   /// Gets additional methods that should only be called outside
   /// the LSP's lock to prevent deadlocking scenarios.
   pub fn when_outside_lsp_lock(&self) -> OutsideLockClient {
@@ -52,14 +47,11 @@ impl Client {
 
   pub async fn publish_diagnostics(
     &self,
-    uri: LspClientUrl,
+    uri: Uri,
     diags: Vec<lsp::Diagnostic>,
     version: Option<i32>,
   ) {
-    self
-      .0
-      .publish_diagnostics(uri.to_uri(), diags, version)
-      .await;
+    self.0.publish_diagnostics(uri, diags, version).await;
   }
 
   pub fn send_registry_state_notification(
@@ -73,17 +65,19 @@ impl Client {
     });
   }
 
-  /// This notification is sent to the client during internal testing
-  /// purposes only in order to let the test client know when the latest
-  /// diagnostics have been published.
-  pub fn send_diagnostic_batch_notification(
-    &self,
-    params: lsp_custom::DiagnosticBatchNotificationParams,
-  ) {
+  pub fn send_diagnostic_batch_start_notification(&self) {
     // do on a task in case the caller currently is in the lsp lock
     let client = self.0.clone();
     spawn(async move {
-      client.send_diagnostic_batch_notification(params).await;
+      client.send_diagnostic_batch_start_notification().await;
+    });
+  }
+
+  pub fn send_diagnostic_batch_end_notification(&self) {
+    // do on a task in case the caller currently is in the lsp lock
+    let client = self.0.clone();
+    spawn(async move {
+      client.send_diagnostic_batch_end_notification().await;
     });
   }
 
@@ -92,6 +86,19 @@ impl Client {
     let client = self.0.clone();
     spawn(async move {
       client.send_test_notification(params).await;
+    });
+  }
+
+  pub fn send_did_refresh_deno_configuration_tree_notification(
+    &self,
+    params: lsp_custom::DidRefreshDenoConfigurationTreeNotificationParams,
+  ) {
+    // do on a task in case the caller currently is in the lsp lock
+    let client = self.0.clone();
+    spawn(async move {
+      client
+        .send_did_refresh_deno_configuration_tree_notification(params)
+        .await;
     });
   }
 
@@ -131,6 +138,16 @@ impl Client {
       client.show_message(message_type, message).await;
     });
   }
+
+  pub fn refresh_diagnostics(&self) {
+    // do on a task in case the caller currently is in the lsp lock
+    let client = self.0.clone();
+    spawn(async move {
+      if let Err(err) = client.refresh_diagnostics().await {
+        lsp_warn!("Client failed to refresh diagnostics: ${err:#}");
+      }
+    });
+  }
 }
 
 /// DANGER: The methods on this client should only be called outside
@@ -167,11 +184,13 @@ trait ClientTrait: Send + Sync {
     &self,
     params: lsp_custom::RegistryStateNotificationParams,
   );
-  async fn send_diagnostic_batch_notification(
-    &self,
-    params: lsp_custom::DiagnosticBatchNotificationParams,
-  );
+  async fn send_diagnostic_batch_start_notification(&self);
+  async fn send_diagnostic_batch_end_notification(&self);
   async fn send_test_notification(&self, params: TestingNotification);
+  async fn send_did_refresh_deno_configuration_tree_notification(
+    &self,
+    params: lsp_custom::DidRefreshDenoConfigurationTreeNotificationParams,
+  );
   async fn send_did_change_deno_configuration_notification(
     &self,
     params: lsp_custom::DidChangeDenoConfigurationNotificationParams,
@@ -180,6 +199,7 @@ trait ClientTrait: Send + Sync {
     &self,
     params: lsp_custom::DidUpgradeCheckNotificationParams,
   );
+  async fn refresh_diagnostics(&self) -> Result<(), AnyError>;
   async fn workspace_configuration(
     &self,
     scopes: Vec<Option<lsp::Uri>>,
@@ -215,13 +235,17 @@ impl ClientTrait for TowerClient {
       .await
   }
 
-  async fn send_diagnostic_batch_notification(
-    &self,
-    params: lsp_custom::DiagnosticBatchNotificationParams,
-  ) {
+  async fn send_diagnostic_batch_start_notification(&self) {
     self
       .0
-      .send_notification::<lsp_custom::DiagnosticBatchNotification>(params)
+      .send_notification::<lsp_custom::DiagnosticBatchStartNotification>(())
+      .await
+  }
+
+  async fn send_diagnostic_batch_end_notification(&self) {
+    self
+      .0
+      .send_notification::<lsp_custom::DiagnosticBatchEndNotification>(())
       .await
   }
 
@@ -252,6 +276,18 @@ impl ClientTrait for TowerClient {
     }
   }
 
+  async fn send_did_refresh_deno_configuration_tree_notification(
+    &self,
+    params: lsp_custom::DidRefreshDenoConfigurationTreeNotificationParams,
+  ) {
+    self
+      .0
+      .send_notification::<lsp_custom::DidRefreshDenoConfigurationTreeNotification>(
+        params,
+      )
+      .await
+  }
+
   async fn send_did_change_deno_configuration_notification(
     &self,
     params: lsp_custom::DidChangeDenoConfigurationNotificationParams,
@@ -272,6 +308,14 @@ impl ClientTrait for TowerClient {
       .0
       .send_notification::<lsp_custom::DidUpgradeCheckNotification>(params)
       .await
+  }
+
+  async fn refresh_diagnostics(&self) -> Result<(), AnyError> {
+    self
+      .0
+      .send_request::<lsp::request::WorkspaceDiagnosticRefresh>(())
+      .await
+      .map_err(|err| anyhow!("{err:#}"))
   }
 
   async fn workspace_configuration(
@@ -339,66 +383,5 @@ impl ClientTrait for TowerClient {
       .register_capability(registrations)
       .await
       .map_err(|err| anyhow!("{}", err))
-  }
-}
-
-#[derive(Clone)]
-struct ReplClient;
-
-#[async_trait]
-impl ClientTrait for ReplClient {
-  async fn publish_diagnostics(
-    &self,
-    _uri: lsp::Uri,
-    _diagnostics: Vec<lsp::Diagnostic>,
-    _version: Option<i32>,
-  ) {
-  }
-
-  async fn send_registry_state_notification(
-    &self,
-    _params: lsp_custom::RegistryStateNotificationParams,
-  ) {
-  }
-
-  async fn send_diagnostic_batch_notification(
-    &self,
-    _params: lsp_custom::DiagnosticBatchNotificationParams,
-  ) {
-  }
-
-  async fn send_test_notification(&self, _params: TestingNotification) {}
-
-  async fn send_did_change_deno_configuration_notification(
-    &self,
-    _params: lsp_custom::DidChangeDenoConfigurationNotificationParams,
-  ) {
-  }
-
-  async fn send_did_upgrade_check_notification(
-    &self,
-    _params: lsp_custom::DidUpgradeCheckNotificationParams,
-  ) {
-  }
-
-  async fn workspace_configuration(
-    &self,
-    scopes: Vec<Option<lsp::Uri>>,
-  ) -> Result<Vec<WorkspaceSettings>, AnyError> {
-    Ok(vec![get_repl_workspace_settings(); scopes.len()])
-  }
-
-  async fn show_message(
-    &self,
-    _message_type: lsp::MessageType,
-    _message: String,
-  ) {
-  }
-
-  async fn register_capability(
-    &self,
-    _registrations: Vec<lsp::Registration>,
-  ) -> Result<(), AnyError> {
-    Ok(())
   }
 }

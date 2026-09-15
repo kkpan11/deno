@@ -1,106 +1,68 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
 import { assertEquals, assertThrows, delay } from "./test_util.ts";
 
 Deno.test(
   { ignore: Deno.build.os !== "windows" },
-  function signalsNotImplemented() {
-    const msg =
-      "Windows only supports ctrl-c (SIGINT) and ctrl-break (SIGBREAK).";
-    assertThrows(
-      () => {
-        Deno.addSignalListener("SIGALRM", () => {});
-      },
-      Error,
-      msg,
-    );
-    assertThrows(
-      () => {
-        Deno.addSignalListener("SIGCHLD", () => {});
-      },
-      Error,
-      msg,
-    );
-    assertThrows(
-      () => {
-        Deno.addSignalListener("SIGHUP", () => {});
-      },
-      Error,
-      msg,
-    );
-    assertThrows(
-      () => {
-        Deno.addSignalListener("SIGIO", () => {});
-      },
-      Error,
-      msg,
-    );
-    assertThrows(
-      () => {
-        Deno.addSignalListener("SIGPIPE", () => {});
-      },
-      Error,
-      msg,
-    );
-    assertThrows(
-      () => {
-        Deno.addSignalListener("SIGQUIT", () => {});
-      },
-      Error,
-      msg,
-    );
-    assertThrows(
-      () => {
-        Deno.addSignalListener("SIGTERM", () => {});
-      },
-      Error,
-      msg,
-    );
-    assertThrows(
-      () => {
-        Deno.addSignalListener("SIGUSR1", () => {});
-      },
-      Error,
-      msg,
-    );
-    assertThrows(
-      () => {
-        Deno.addSignalListener("SIGUSR2", () => {});
-      },
-      Error,
-      msg,
-    );
-    assertThrows(
-      () => {
-        Deno.addSignalListener("SIGWINCH", () => {});
-      },
-      Error,
-      msg,
-    );
+  function windowsUnsupportedSignalsTest() {
+    // These signals are Unix-only and not supported on Windows at all.
+    const unsupported = [
+      "SIGALRM",
+      "SIGCHLD",
+      "SIGFPE",
+      "SIGILL",
+      "SIGIO",
+      "SIGPIPE",
+      "SIGSEGV",
+      "SIGUSR1",
+      "SIGUSR2",
+    ];
+    for (const sig of unsupported) {
+      assertThrows(
+        () => {
+          Deno.addSignalListener(sig as Deno.Signal, () => {});
+        },
+        Error,
+        `Invalid signal: ${sig}`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  { ignore: Deno.build.os !== "windows" },
+  function windowsForbiddenSignalsTest() {
+    // These signals exist on Windows but are forbidden to listen for
+    // (uncatchable/fatal signals).
     assertThrows(
       () => Deno.addSignalListener("SIGKILL", () => {}),
-      Error,
-      msg,
+      TypeError,
+      "Binding to signal 'SIGKILL' is not allowed",
     );
     assertThrows(
-      () => Deno.addSignalListener("SIGSTOP", () => {}),
-      Error,
-      msg,
+      () => Deno.addSignalListener("SIGABRT", () => {}),
+      TypeError,
+      "Binding to signal 'SIGABRT' is not allowed",
     );
-    assertThrows(
-      () => Deno.addSignalListener("SIGILL", () => {}),
-      Error,
-      msg,
-    );
-    assertThrows(
-      () => Deno.addSignalListener("SIGFPE", () => {}),
-      Error,
-      msg,
-    );
-    assertThrows(
-      () => Deno.addSignalListener("SIGSEGV", () => {}),
-      Error,
-      msg,
-    );
+  },
+);
+
+Deno.test(
+  { ignore: Deno.build.os !== "windows" },
+  function windowsSupportedSignalsTest() {
+    // These signals should be registerable on Windows.
+    const supported: Deno.Signal[] = [
+      "SIGINT",
+      "SIGBREAK",
+      "SIGHUP",
+      "SIGTERM",
+      "SIGQUIT",
+      "SIGWINCH",
+    ];
+    for (const sig of supported) {
+      const listener = () => {};
+      Deno.addSignalListener(sig, listener);
+      Deno.removeSignalListener(sig, listener);
+    }
   },
 );
 
@@ -209,11 +171,77 @@ Deno.test(
     const { code } = await new Deno.Command(Deno.execPath(), {
       args: [
         "eval",
-        "--unstable",
         "Deno.addSignalListener('SIGINT', () => {})",
       ],
     }).output();
     assertEquals(code, 0);
+  },
+);
+
+Deno.test(
+  {
+    ignore: Deno.build.os === "windows",
+    permissions: { run: true },
+  },
+  async function workerSignalListenerIsRemovedOnTerminate() {
+    const childCode = `
+      const workerCode = \`
+        Deno.addSignalListener("SIGTERM", () => {});
+        self.postMessage("registered");
+        setInterval(() => {}, 1000);
+      \`;
+      const worker = new Worker(
+        "data:application/javascript," + encodeURIComponent(workerCode),
+        { type: "module" },
+      );
+      await new Promise((resolve) => {
+        worker.onmessage = resolve;
+      });
+      worker.terminate();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      console.log("ready");
+      setInterval(() => {}, 1000);
+    `;
+
+    const child = new Deno.Command(Deno.execPath(), {
+      args: ["eval", childCode],
+      stdout: "piped",
+      stderr: "piped",
+    }).spawn();
+
+    const stdout = child.stdout
+      .pipeThrough(new TextDecoderStream())
+      .getReader();
+    const stderrPromise = child.stderr
+      .pipeThrough(new TextDecoderStream())
+      .getReader()
+      .read();
+
+    try {
+      const { value } = await stdout.read();
+      assertEquals(value, "ready\n");
+
+      child.kill("SIGTERM");
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      const status = await Promise.race([
+        child.status,
+        new Promise<undefined>((resolve) => {
+          timeoutId = setTimeout(() => resolve(undefined), 2000);
+        }),
+      ]);
+      clearTimeout(timeoutId);
+
+      if (status === undefined) {
+        child.kill("SIGKILL");
+        await child.status;
+        const stderr = (await stderrPromise).value ?? "";
+        throw new Error(`child ignored SIGTERM; stderr: ${stderr}`);
+      }
+
+      assertEquals(status.signal, "SIGTERM");
+    } finally {
+      stdout.releaseLock();
+    }
   },
 );
 
@@ -314,5 +342,24 @@ Deno.test(
 
     Deno.removeSignalListener("SIGUNUSED", i);
     Deno.removeSignalListener("SIGPOLL", i);
+  },
+);
+
+Deno.test(
+  {
+    ignore: Deno.build.os === "windows",
+    permissions: { run: true },
+  },
+  function killWithSignalZero() {
+    // This should not throw for the current process
+    Deno.kill(Deno.pid, 0);
+
+    // Test with a non-existent PID (very high number unlikely to exist)
+    assertThrows(
+      () => {
+        Deno.kill(999999, 0);
+      },
+      Deno.errors.NotFound,
+    );
   },
 );
